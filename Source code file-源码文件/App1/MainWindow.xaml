@@ -1,0 +1,603 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="App1.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:App1"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Title="小K壁纸">
+
+    <Grid Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+        <!-- 简化版主界面 -->
+        <Grid.RowDefinitions>
+            <RowDefinition x:Name="TitleBarRow" Height="0"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        
+        <!-- 自定义标题栏区域 -->
+        <Grid Grid.Row="0" x:Name="CustomTitleBar" Visibility="Collapsed">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="140"/>
+            </Grid.ColumnDefinitions>
+            
+            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="15" Padding="15,0" VerticalAlignment="Center">
+                <TextBlock Text="小K壁纸" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            </StackPanel>
+        </Grid>
+        
+        <!-- 壁纸网格区域 -->
+        <Grid Grid.Row="1">
+            <!-- 通知栏 (左下角) - 简洁风格 -->
+            <Border x:Name="NotificationBar"
+                    Visibility="Collapsed"
+                    Background="#2D2D2D"
+                    CornerRadius="8"
+                    Padding="16,12"
+                    VerticalAlignment="Bottom"
+                    HorizontalAlignment="Left"
+                    Margin="20"
+                    MinWidth="280"
+                    MaxWidth="400"
+                    Canvas.ZIndex="999">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    
+                    <!-- 进度圈 (加载中) -->
+                    <ProgressRing x:Name="NotificationProgress"
+                                 Grid.Column="0"
+                                 Width="20"
+                                 Height="20"
+                                 Visibility="Collapsed"
+                                 Margin="0,0,12,0"/>
+                    
+                    <!-- 成功图标 -->
+                    <Viewbox x:Name="NotificationSuccessIcon"
+                            Grid.Column="0"
+                            Width="20"
+                            Height="20"
+                            Visibility="Collapsed"
+                            Margin="0,0,12,0">
+                        <SymbolIcon Symbol="Accept" Foreground="#4CAF50"/>
+                    </Viewbox>
+                    
+                    <!-- 错误图标 -->
+                    <Viewbox x:Name="NotificationErrorIcon"
+                            Grid.Column="0"
+                            Width="20"
+                            Height="20"
+                            Visibility="Collapsed"
+                            Margin="0,0,12,0">
+                        <SymbolIcon Symbol="Cancel" Foreground="#F44336"/>
+                    </Viewbox>
+                    
+                    <!-- 勾选框（仅成功时显示） -->
+                    <CheckBox x:Name="NotificationCheckBox"
+                             Grid.Column="1"
+                             IsChecked="True"
+                             IsEnabled="False"
+                             Visibility="Collapsed"
+                             Margin="0,0,8,0"
+                             Foreground="#4CAF50"/>
+                    
+                    <!-- 消息文本 -->
+                    <TextBlock x:Name="NotificationText"
+                              Grid.Column="2"
+                              Text="消息"
+                              FontSize="14"
+                              Foreground="White"
+                              VerticalAlignment="Center"
+                              TextWrapping="Wrap"/>
+                    
+                    <!-- 关闭按钮 -->
+                    <Button x:Name="NotificationCloseButton"
+                           Grid.Column="3"
+                           Content="&#xE711;"
+                           FontFamily="Segoe MDL2 Assets"
+                           FontSize="12"
+                           Width="24"
+                           Height="24"
+                           Margin="12,0,0,0"
+                           Background="Transparent"
+                           BorderThickness="0"
+                           Foreground="#999999"
+                           Click="NotificationCloseButton_Click"
+                           VerticalAlignment="Center">
+                        <Button.Resources>
+                            <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="Transparent"/>
+                            <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="Transparent"/>
+                        </Button.Resources>
+                    </Button>
+                </Grid>
+                <Border.Shadow>
+                    <ThemeShadow />
+                </Border.Shadow>
+            </Border>
+            
+            <!-- 加载中提示 -->
+            <StackPanel x:Name="LoadingPanel" 
+                        Visibility="Collapsed"
+                        HorizontalAlignment="Center" 
+                        VerticalAlignment="Center"
+                        Spacing="15">
+                <ProgressRing IsActive="True" Width="50" Height="50"/>
+                <TextBlock Text="正在加载壁纸..." FontSize="16"/>
+            </StackPanel>
+            
+            <!-- 设置壁纸进度提示（左下角小型） -->
+            <Border x:Name="SettingWallpaperPanel"
+                    Visibility="Collapsed"
+                    Background="{ThemeResource AcrylicBackgroundFillColorDefaultBrush}"
+                    CornerRadius="8"
+                    Padding="15,10"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Bottom"
+                    Margin="20,0,0,80"
+                    Canvas.ZIndex="998">
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                    <ProgressRing IsActive="True" Width="20" Height="20"/>
+                    <TextBlock Text="正在设置壁纸..." 
+                               FontSize="13"
+                               VerticalAlignment="Center"/>
+                </StackPanel>
+                <Border.Shadow>
+                    <ThemeShadow />
+                </Border.Shadow>
+            </Border>
+            
+            <!-- 空状态提示 -->
+            <StackPanel x:Name="EmptyPanel" 
+                        Visibility="Collapsed"
+                        HorizontalAlignment="Center" 
+                        VerticalAlignment="Center"
+                        Spacing="15">
+                <TextBlock Text="📷" FontSize="64"/>
+                <TextBlock Text="暂无壁纸，点击刷新获取" FontSize="18"/>
+                <Button Content="刷新获取" Click="btnRefresh_Click"/>
+            </StackPanel>
+            
+            <!-- 壁纸网格 -->
+            <ScrollViewer x:Name="WallpaperScrollViewer" 
+                          Visibility="Collapsed"
+                          ViewChanged="WallpaperScrollViewer_ViewChanged">
+                <StackPanel>
+                    <GridView x:Name="WallpaperGridView"
+                              SelectionMode="None"
+                              IsItemClickEnabled="False"
+                              HorizontalAlignment="Center"
+                              Padding="20">
+                        <GridView.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <ItemsWrapGrid Orientation="Horizontal" 
+                                               HorizontalAlignment="Center"/>
+                            </ItemsPanelTemplate>
+                        </GridView.ItemsPanel>
+                        
+                        <GridView.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Width="280" Height="200" 
+                                      Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                      CornerRadius="8"
+                                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                      BorderThickness="1"
+                                      Margin="10"
+                                      Tapped="WallpaperGridItem_Tapped"
+                                      DoubleTapped="WallpaperItem_DoubleTapped"
+                                      RightTapped="WallpaperGridItem_RightTapped"
+                                      PointerEntered="WallpaperGridItem_PointerEntered"
+                                      PointerExited="WallpaperGridItem_PointerExited"
+                                      RenderTransformOrigin="0.5,0.5">
+                                    <Grid.RenderTransform>
+                                        <ScaleTransform x:Name="gridScale" ScaleX="1" ScaleY="1"/>
+                                    </Grid.RenderTransform>
+                                    
+                                    <!-- 右键菜单 -->
+                                    <Grid.ContextFlyout>
+                                        <MenuFlyout Opening="ContextMenu_Opening">
+                                            <MenuFlyoutItem Text="设为桌面背景" Click="SetAsDesktopWallpaper_Click">
+                                                <MenuFlyoutItem.Icon>
+                                                    <FontIcon Glyph="&#xE91B;" />
+                                                </MenuFlyoutItem.Icon>
+                                            </MenuFlyoutItem>
+                                            <MenuFlyoutItem Text="设为锁屏界面" Click="SetAsLockScreen_Click">
+                                                <MenuFlyoutItem.Icon>
+                                                    <FontIcon Glyph="&#xE72E;" />
+                                                </MenuFlyoutItem.Icon>
+                                            </MenuFlyoutItem>
+                                            <MenuFlyoutSeparator />
+                                            <MenuFlyoutSubItem Text="桌面背景定时切换">
+                                                <MenuFlyoutSubItem.Icon>
+                                                    <FontIcon Glyph="&#xE916;" />
+                                                </MenuFlyoutSubItem.Icon>
+                                                <MenuFlyoutItem Text="关闭自动更换" Tag="0" Click="SetDesktopTimerInterval_Click" />
+                                                <MenuFlyoutSeparator />
+                                                <MenuFlyoutSeparator />
+                                                <MenuFlyoutItem Text="每1小时" Tag="60" Click="SetDesktopTimerInterval_Click" />
+                                                <MenuFlyoutItem Text="每2小时" Tag="120" Click="SetDesktopTimerInterval_Click" />
+                                                <MenuFlyoutItem Text="每6小时" Tag="360" Click="SetDesktopTimerInterval_Click" />
+                                                <MenuFlyoutItem Text="每12小时" Tag="720" Click="SetDesktopTimerInterval_Click" />
+                                                <MenuFlyoutItem Text="每1天" Tag="1440" Click="SetDesktopTimerInterval_Click" />
+                                            </MenuFlyoutSubItem>
+                                            <MenuFlyoutSubItem Text="锁屏界面定时切换">
+                                                <MenuFlyoutSubItem.Icon>
+                                                    <FontIcon Glyph="&#xE916;" />
+                                                </MenuFlyoutSubItem.Icon>
+                                                <MenuFlyoutItem Text="关闭自动更换" Tag="0" Click="SetLockScreenTimerInterval_Click" />
+                                                <MenuFlyoutSeparator />
+                                                <MenuFlyoutSeparator />
+                                                <MenuFlyoutItem Text="每1小时" Tag="60" Click="SetLockScreenTimerInterval_Click" />
+                                                <MenuFlyoutItem Text="每2小时" Tag="120" Click="SetLockScreenTimerInterval_Click" />
+                                                <MenuFlyoutItem Text="每6小时" Tag="360" Click="SetLockScreenTimerInterval_Click" />
+                                                <MenuFlyoutItem Text="每12小时" Tag="720" Click="SetLockScreenTimerInterval_Click" />
+                                                <MenuFlyoutItem Text="每1天" Tag="1440" Click="SetLockScreenTimerInterval_Click" />
+                                            </MenuFlyoutSubItem>
+                                            <MenuFlyoutSeparator />
+                                            <MenuFlyoutItem x:Name="GridStartupMenuItem" Text="开机启动" Click="ToggleStartup_Click">
+                                                <MenuFlyoutItem.Icon>
+                                                    <FontIcon Glyph="&#xE7B7;" />
+                                                </MenuFlyoutItem.Icon>
+                                            </MenuFlyoutItem>
+                                            <MenuFlyoutSeparator />
+                                            <MenuFlyoutItem Text="下载此图片" Click="DownloadImage_Click">
+                                                <MenuFlyoutItem.Icon>
+                                                    <FontIcon Glyph="&#xE896;" />
+                                                </MenuFlyoutItem.Icon>
+                                            </MenuFlyoutItem>
+                                            <MenuFlyoutItem x:Name="GridClearCacheMenuItem" Text="清理缓存" Click="ClearCache_Click" Visibility="Collapsed">
+                                                <MenuFlyoutItem.Icon>
+                                                    <FontIcon Glyph="&#xE74D;" />
+                                                </MenuFlyoutItem.Icon>
+                                            </MenuFlyoutItem>
+                                        </MenuFlyout>
+                                    </Grid.ContextFlyout>
+                                    
+                                    <!-- 缩略图 -->
+                                    <Image Stretch="UniformToFill" 
+                                           Loaded="GridImage_Loaded"
+                                           ImageOpened="GridImage_Opened"/>
+                                    
+                                    <!-- 底部信息栏 -->
+                                    <Grid VerticalAlignment="Bottom" 
+                                          Background="{ThemeResource AcrylicBackgroundFillColorDefaultBrush}"
+                                          Padding="12,8">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding Title}" 
+                                                       FontSize="14" 
+                                                       FontWeight="SemiBold"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       MaxLines="1"/>
+                                            <TextBlock Text="{Binding Copyright}" 
+                                                       FontSize="11" 
+                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       MaxLines="1"
+                                                       Margin="0,2,0,0"/>
+                                        </StackPanel>
+                                    </Grid>
+                                </Grid>
+                            </DataTemplate>
+                        </GridView.ItemTemplate>
+                    </GridView>
+                    
+                    <!-- 底部加载提示 -->
+                    <StackPanel x:Name="txtLoadingMore" 
+                                Visibility="Collapsed"
+                                HorizontalAlignment="Center"
+                                Padding="20"
+                                Spacing="10"
+                                Orientation="Horizontal">
+                        <ProgressRing IsActive="True" Width="24" Height="24"/>
+                        <TextBlock Text="加载中..." 
+                                   FontSize="14"
+                                   VerticalAlignment="Center"
+                                   Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"/>
+                    </StackPanel>
+                </StackPanel>
+            </ScrollViewer>
+            
+            <!-- 沉浸式浏览模式 -->
+            <FlipView x:Name="ImmersiveFlipView"
+                      Visibility="Visible"
+                      PointerWheelChanged="ImmersiveFlipView_PointerWheelChanged"
+                      Background="{ThemeResource LayerFillColorDefaultBrush}">
+                <FlipView.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <StackPanel />
+                    </ItemsPanelTemplate>
+                </FlipView.ItemsPanel>
+                <FlipView.ItemTemplate>
+                    <DataTemplate>
+                        <Grid>
+                            <!-- 加载指示器 -->
+                            <ProgressRing x:Name="LoadingRing"
+                                         IsActive="True"
+                                         Width="40"
+                                         Height="40"
+                                         HorizontalAlignment="Center"
+                                         VerticalAlignment="Center"/>
+                            
+                            <!-- 纯净全屏大图，使用原始分辨率（优先FullUrl，备用ThumbUrl） -->
+                            <Image x:Name="ImmersiveImage"
+                                   Stretch="UniformToFill"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   Opacity="0"
+                                   DoubleTapped="ImmersiveImage_DoubleTapped"
+                                   Loaded="ImmersiveImage_Loaded"
+                                   ImageOpened="ImmersiveImage_Opened"
+                                   RightTapped="ImmersiveImage_RightTapped">
+                                <Image.ContextFlyout>
+                                    <MenuFlyout Opening="ContextMenu_Opening">
+                                        <MenuFlyoutItem Text="设为桌面背景" Click="SetAsDesktopWallpaper_Click">
+                                            <MenuFlyoutItem.Icon>
+                                                <FontIcon Glyph="&#xE91B;" />
+                                            </MenuFlyoutItem.Icon>
+                                        </MenuFlyoutItem>
+                                        <MenuFlyoutItem Text="设为锁屏界面" Click="SetAsLockScreen_Click">
+                                            <MenuFlyoutItem.Icon>
+                                                <FontIcon Glyph="&#xE72E;" />
+                                            </MenuFlyoutItem.Icon>
+                                        </MenuFlyoutItem>
+                                        <MenuFlyoutSeparator />
+                                        <MenuFlyoutSubItem Text="桌面背景定时切换">
+                                            <MenuFlyoutSubItem.Icon>
+                                                <FontIcon Glyph="&#xE916;" />
+                                            </MenuFlyoutSubItem.Icon>
+                                            <MenuFlyoutItem Text="关闭自动更换" Tag="0" Click="SetDesktopTimerInterval_Click" />
+                                            <MenuFlyoutSeparator />
+                                            <MenuFlyoutSeparator />
+                                            <MenuFlyoutItem Text="每1小时" Tag="60" Click="SetDesktopTimerInterval_Click" />
+                                            <MenuFlyoutItem Text="每2小时" Tag="120" Click="SetDesktopTimerInterval_Click" />
+                                            <MenuFlyoutItem Text="每6小时" Tag="360" Click="SetDesktopTimerInterval_Click" />
+                                            <MenuFlyoutItem Text="每12小时" Tag="720" Click="SetDesktopTimerInterval_Click" />
+                                            <MenuFlyoutItem Text="每1天" Tag="1440" Click="SetDesktopTimerInterval_Click" />
+                                        </MenuFlyoutSubItem>
+                                        <MenuFlyoutSubItem Text="锁屏界面定时切换">
+                                            <MenuFlyoutSubItem.Icon>
+                                                <FontIcon Glyph="&#xE916;" />
+                                            </MenuFlyoutSubItem.Icon>
+                                            <MenuFlyoutItem Text="关闭自动更换" Tag="0" Click="SetLockScreenTimerInterval_Click" />
+                                            <MenuFlyoutSeparator />
+                                            <MenuFlyoutSeparator />
+                                            <MenuFlyoutItem Text="每1小时" Tag="60" Click="SetLockScreenTimerInterval_Click" />
+                                            <MenuFlyoutItem Text="每2小时" Tag="120" Click="SetLockScreenTimerInterval_Click" />
+                                            <MenuFlyoutItem Text="每6小时" Tag="360" Click="SetLockScreenTimerInterval_Click" />
+                                            <MenuFlyoutItem Text="每12小时" Tag="720" Click="SetLockScreenTimerInterval_Click" />
+                                            <MenuFlyoutItem Text="每1天" Tag="1440" Click="SetLockScreenTimerInterval_Click" />
+                                        </MenuFlyoutSubItem>
+                                        <MenuFlyoutSeparator />
+                                        <MenuFlyoutItem x:Name="StartupMenuItem" Text="开机启动" Click="ToggleStartup_Click">
+                                            <MenuFlyoutItem.Icon>
+                                                <FontIcon Glyph="&#xE7B7;" />
+                                            </MenuFlyoutItem.Icon>
+                                        </MenuFlyoutItem>
+                                        <MenuFlyoutSeparator />
+                                        <MenuFlyoutItem Text="下载此图片" Click="DownloadImage_Click">
+                                            <MenuFlyoutItem.Icon>
+                                                <FontIcon Glyph="&#xE896;" />
+                                            </MenuFlyoutItem.Icon>
+                                        </MenuFlyoutItem>
+                                        <MenuFlyoutItem x:Name="ClearCacheMenuItem" Text="清理缓存" Click="ClearCache_Click" Visibility="Collapsed">
+                                            <MenuFlyoutItem.Icon>
+                                                <FontIcon Glyph="&#xE74D;" />
+                                            </MenuFlyoutItem.Icon>
+                                        </MenuFlyoutItem>
+                                    </MenuFlyout>
+                                </Image.ContextFlyout>
+                            </Image>
+                        </Grid>
+                    </DataTemplate>
+                </FlipView.ItemTemplate>
+            </FlipView>
+            
+            <!-- 沉浸式模式 - 左下角加载进度条 -->
+            <ProgressBar x:Name="ImmersiveLoadingIndicator"
+                         IsIndeterminate="True"
+                         Width="100"
+                         Height="4"
+                         HorizontalAlignment="Left"
+                         VerticalAlignment="Bottom"
+                         Margin="20,20,20,80"
+                         Visibility="Collapsed"
+                         Canvas.ZIndex="999"/>
+            
+            <!-- 左下角 Toast 通知 -->
+            <Grid x:Name="ToastNotification"
+                  HorizontalAlignment="Left"
+                  VerticalAlignment="Bottom"
+                  Margin="20"
+                  Visibility="Collapsed"
+                  Canvas.ZIndex="1000">
+                <!-- 阴影层 -->
+                <Border Background="#40000000"
+                        CornerRadius="8"
+                        Margin="0,2,0,-2"/>
+                
+                <!-- 内容层 -->
+                <Border Background="#E62D2D2D"
+                        CornerRadius="8"
+                        Padding="20,12">
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <FontIcon x:Name="ToastIcon"
+                                  Glyph="&#xE73E;"
+                                  FontSize="20"
+                                  Foreground="#4CAF50"/>
+                        <TextBlock x:Name="ToastMessage"
+                                   Text="操作成功"
+                                   FontSize="14"
+                                   Foreground="White"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+            
+            <!-- 启动画面覆盖层 -->
+            <Grid x:Name="SplashScreen"
+                  Background="#1E1E1E"
+                  Canvas.ZIndex="9999"
+                  Visibility="Visible">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                
+                <!-- Logo 和标题 -->
+                <StackPanel Grid.Row="0" 
+                            VerticalAlignment="Center" 
+                            HorizontalAlignment="Center"
+                            Spacing="30">
+                    
+                    <!-- Logo 图片 (1240x600，保持2:1比例) -->
+                    <Image Source="Assets/SplashScreen.scale-200.png"
+                           Width="600"
+                           Height="300"
+                           Stretch="Uniform"/>
+                    
+                    <!-- 应用名称 -->
+                    <TextBlock Text="小K壁纸"
+                               FontSize="32"
+                               FontWeight="SemiBold"
+                               Foreground="White"
+                               HorizontalAlignment="Center"/>
+                    
+                    <!-- 版本信息 -->
+                    <TextBlock Text="v1.0.0"
+                               FontSize="14"
+                               Foreground="#888888"
+                               HorizontalAlignment="Center"/>
+                    
+                    <!-- 开发者信息 -->
+                    <TextBlock Text="开发者：麦麦提艾力"
+                               FontSize="12"
+                               Foreground="#666666"
+                               HorizontalAlignment="Center"
+                               Margin="0,10,0,0"/>
+                </StackPanel>
+                
+                <!-- 加载进度条 -->
+                <StackPanel Grid.Row="1" 
+                            Margin="0,0,0,40"
+                            HorizontalAlignment="Center"
+                            Spacing="10">
+                    <ProgressRing IsActive="True"
+                                 Width="30"
+                                 Height="30"
+                                 Foreground="#FF6A00"/>
+                    <TextBlock Text="正在加载..."
+                               FontSize="12"
+                               Foreground="#AAAAAA"
+                               HorizontalAlignment="Center"/>
+                </StackPanel>
+            </Grid>
+            
+            <!-- 右下角切换模式按钮 -->
+            <Button x:Name="btnToggleViewMode"
+                    Content="&#xE8A9;"
+                    FontFamily="Segoe MDL2 Assets"
+                    FontSize="20"
+                    Width="56"
+                    Height="56"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Bottom"
+                    Margin="20"
+                    Click="btnToggleViewMode_Click"
+                    ToolTipService.ToolTip="切换到网格模式"
+                    Opacity="0.3"
+                    PointerEntered="btnToggleViewMode_PointerEntered"
+                    PointerExited="btnToggleViewMode_PointerExited"
+                    Canvas.ZIndex="1000">
+                <Button.Style>
+                    <Style TargetType="Button">
+                        <Setter Property="Background" Value="#FF6A00"/>
+                        <Setter Property="Foreground" Value="White"/>
+                        <Setter Property="BorderThickness" Value="0"/>
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="Button">
+                                    <Grid x:Name="RootGrid" 
+                                          Background="{TemplateBinding Background}"
+                                          CornerRadius="28">
+                                        <ContentPresenter x:Name="ContentPresenter"
+                                                        Content="{TemplateBinding Content}"
+                                                        ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                        HorizontalAlignment="Center"
+                                                        VerticalAlignment="Center"/>
+                                        <VisualStateManager.VisualStateGroups>
+                                            <VisualStateGroup x:Name="CommonStates">
+                                                <VisualState x:Name="Normal"/>
+                                                <VisualState x:Name="PointerOver"/>
+                                                <VisualState x:Name="Pressed">
+                                                    <VisualState.Setters>
+                                                        <Setter Target="RootGrid.Background" Value="#E55A00"/>
+                                                    </VisualState.Setters>
+                                                </VisualState>
+                                                <VisualState x:Name="Disabled">
+                                                    <VisualState.Setters>
+                                                        <Setter Target="RootGrid.Opacity" Value="0.5"/>
+                                                    </VisualState.Setters>
+                                                </VisualState>
+                                            </VisualStateGroup>
+                                        </VisualStateManager.VisualStateGroups>
+                                    </Grid>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </Button.Style>
+                <Button.Shadow>
+                    <ThemeShadow />
+                </Button.Shadow>
+            </Button>
+            
+            <!-- 全屏图片查看器覆盖层 -->
+            <Grid x:Name="FullScreenImageViewer"
+                  Visibility="Collapsed"
+                  Background="#CC000000"
+                  Canvas.ZIndex="9999"
+                  Tapped="FullScreenImageViewer_Tapped">
+                <!-- 全屏图片 -->
+                <Image x:Name="FullScreenImage"
+                       Stretch="Uniform"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"/>
+                
+                <!-- 关闭提示（右上角） -->
+                <TextBlock Text="点击任意位置关闭"
+                           FontSize="14"
+                           Foreground="White"
+                           Opacity="0.7"
+                           HorizontalAlignment="Right"
+                           VerticalAlignment="Top"
+                           Margin="20"/>
+                
+                <!-- 图片信息（底部） -->
+                <Border Background="#AA000000"
+                        HorizontalAlignment="Stretch"
+                        VerticalAlignment="Bottom"
+                        Padding="20,15">
+                    <StackPanel>
+                        <TextBlock x:Name="FullScreenTitle"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"
+                                   Foreground="White"
+                                   TextWrapping="Wrap"/>
+                        <TextBlock x:Name="FullScreenCopyright"
+                                   FontSize="12"
+                                   Foreground="#CCFFFFFF"
+                                   Margin="0,5,0,0"
+                                   TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>
