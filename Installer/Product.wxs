@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="小k壁纸"
+    Manufacturer="KWallpaper"
+    Version="$(var.Version)"
+    UpgradeCode="3CFA5DCD-3D4A-46CA-9ED8-6A6212849D9D"
+    Language="2052"
+    Scope="perMachine"
+    InstallerVersion="500">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="KWallpaper">
+        <Files Include="$(var.PublishDir)\**">
+          <Exclude Files="$(var.PublishDir)\小K壁纸.exe" />
+        </Files>
+
+        <File Id="MainExe" Source="$(var.PublishDir)\小K壁纸.exe" KeyPath="yes">
+          <Shortcut
+            Id="DesktopShortcut"
+            Directory="DesktopFolder"
+            Name="小K壁纸"
+            WorkingDirectory="INSTALLFOLDER"
+            Advertise="no" />
+        </File>
+      </Directory>
+    </StandardDirectory>
+  </Package>
+</Wix>
