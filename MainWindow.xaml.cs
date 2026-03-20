@@ -7,7 +7,6 @@ using System.Threading.Tasks;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Media;
 using App1.Models;
 using App1.Services;
 using App1.Services.Api;
@@ -28,6 +27,10 @@ namespace App1
         private readonly BingApiService _bingApi;
         private readonly PexelsApiService _pexelsApi;
         private readonly UnsplashApiService _unsplashApi;
+        private readonly DmoeApiService _dmoeApi;
+        private readonly PaaaApiService _paaaApi;
+        private readonly Upx8ApiService _upx8Api;
+        private readonly SeovxApiService _seovxApi;
         private DatabaseService? _databaseService;
         private WallpaperRepository? _repository;
         private readonly CacheService _cacheService;
@@ -68,10 +71,7 @@ namespace App1
         // 滚轮事件节流
         private DateTime _lastWheelTime = DateTime.MinValue;
         private const int WHEEL_THROTTLE_MS = 200;  // 滚轮事件节流：200毫秒
-        
-        // 单击/双击判断
-        private bool _isWaitingForDoubleClick = false;
-        private Wallpaper? _pendingClickWallpaper = null;
+        private double _lastScrollOffset = 0;
         
         // Windows 版本检测（Win11 可以直接加载 HTTPS，Win10 需要下载）
         private readonly bool _isWindows11;
@@ -125,6 +125,10 @@ namespace App1
             _bingApi = new BingApiService();
             _pexelsApi = new PexelsApiService();
             _unsplashApi = new UnsplashApiService();
+            _dmoeApi = new DmoeApiService();
+            _paaaApi = new PaaaApiService();
+            _upx8Api = new Upx8ApiService();
+            _seovxApi = new SeovxApiService();
             _cacheService = new CacheService();
             _wallpaperService = new WallpaperService();
             
@@ -357,6 +361,9 @@ namespace App1
             {
                 System.Diagnostics.Debug.WriteLine("[退出] 开始执行安全关闭流程...");
 
+                // 保存当前设置
+                SaveAppSettings();
+
                 // 停止并清理所有定时器
                 StopAllTimers();
 
@@ -501,26 +508,31 @@ namespace App1
             {
                 _appSettings = SettingsManager.LoadSettings();
                 
+                // 启动恢复时先快照，避免恢复桌面定时器时的保存动作覆盖锁屏状态
+                bool desktopEnabled = _appSettings.IsDesktopTimerEnabled;
+                double desktopInterval = _appSettings.DesktopTimerInterval;
+                bool lockScreenEnabled = _appSettings.IsLockScreenTimerEnabled;
+                double lockScreenInterval = _appSettings.LockScreenTimerInterval;
+                
                 // 恢复定时器状态
-                if (_appSettings.IsDesktopTimerEnabled && _appSettings.DesktopTimerInterval > 0)
+                if (desktopEnabled && desktopInterval > 0)
                 {
-                    StartWallpaperTimer(isDesktop: true, intervalMinutes: _appSettings.DesktopTimerInterval);
+                    StartWallpaperTimer(isDesktop: true, intervalMinutes: desktopInterval, saveSettings: false);
+                    _isDesktopTimerEnabled = true;
                 }
                 
-                if (_appSettings.IsLockScreenTimerEnabled && _appSettings.LockScreenTimerInterval > 0)
+                if (lockScreenEnabled && lockScreenInterval > 0)
                 {
-                    StartWallpaperTimer(isDesktop: false, intervalMinutes: _appSettings.LockScreenTimerInterval);
+                    StartWallpaperTimer(isDesktop: false, intervalMinutes: lockScreenInterval, saveSettings: false);
+                    _isLockScreenTimerEnabled = true;
                 }
                 
-                // 恢复开机自启状态
+                // 同步开机自启状态：注册表为准，避免因旧配置误关开机启动
                 if (_appSettings.IsStartupEnabled)
                 {
                     EnableStartup();
                 }
-                else if (IsStartupEnabled())
-                {
-                    DisableStartup();
-                }
+                _appSettings.IsStartupEnabled = IsStartupEnabled();
                 
                 System.Diagnostics.Debug.WriteLine("[设置] 应用设置已恢复");
                 
@@ -540,11 +552,34 @@ namespace App1
         {
             try
             {
+                _appSettings.IsStartupEnabled = IsStartupEnabled();
                 _appSettings.IsDesktopTimerEnabled = _isDesktopTimerEnabled;
                 _appSettings.IsLockScreenTimerEnabled = _isLockScreenTimerEnabled;
                 
+                // 保存定时器间隔时间
+                // 如果定时器正在运行，从定时器对象获取最新的间隔时间
+                if (_desktopWallpaperTimer != null)
+                {
+                    _appSettings.DesktopTimerInterval = _desktopWallpaperTimer.Interval.TotalMinutes;
+                }
+                if (_lockScreenWallpaperTimer != null)
+                {
+                    _appSettings.LockScreenTimerInterval = _lockScreenWallpaperTimer.Interval.TotalMinutes;
+                }
+                // 即使定时器已停止，也要确保间隔时间不为0
+                if (_appSettings.DesktopTimerInterval <= 0)
+                {
+                    _appSettings.DesktopTimerInterval = 60; // 默认1小时
+                }
+                if (_appSettings.LockScreenTimerInterval <= 0)
+                {
+                    _appSettings.LockScreenTimerInterval = 60; // 默认1小时
+                }
+                
                 SettingsManager.SaveSettings(_appSettings);
                 System.Diagnostics.Debug.WriteLine("[设置] 配置已保存");
+                System.Diagnostics.Debug.WriteLine($"[设置] 桌面定时器: {(_appSettings.IsDesktopTimerEnabled ? "启用" : "禁用")}, 间隔: {_appSettings.DesktopTimerInterval}分钟");
+                System.Diagnostics.Debug.WriteLine($"[设置] 锁屏定时器: {(_appSettings.IsLockScreenTimerEnabled ? "启用" : "禁用")}, 间隔: {_appSettings.LockScreenTimerInterval}分钟");
                 
                 // 更新定时状态指示器
                 UpdateTimerStatusIndicator();
@@ -581,6 +616,37 @@ namespace App1
                     }
                     
                     TimerStatusText.Text = statusText;
+                    
+                    // 添加定时器，2秒后逐渐消失
+                    var fadeTimer = new DispatcherTimer();
+                    fadeTimer.Interval = TimeSpan.FromSeconds(2);
+                    fadeTimer.Tick += (s, e) =>
+                    {
+                        fadeTimer.Stop();
+                        
+                        // 渐出动画
+                        var fadeOut = new Microsoft.UI.Xaml.Media.Animation.DoubleAnimation
+                        {
+                            From = 1,
+                            To = 0,
+                            Duration = new Duration(TimeSpan.FromMilliseconds(500)),
+                            EasingFunction = new Microsoft.UI.Xaml.Media.Animation.QuadraticEase()
+                        };
+                        
+                        var storyboard = new Microsoft.UI.Xaml.Media.Animation.Storyboard();
+                        storyboard.Children.Add(fadeOut);
+                        Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(fadeOut, TimerStatusIndicator);
+                        Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(fadeOut, "Opacity");
+                        
+                        storyboard.Completed += (s2, e2) =>
+                        {
+                            TimerStatusIndicator.Visibility = Visibility.Collapsed;
+                            TimerStatusIndicator.Opacity = 1; // 重置透明度，以便下次显示
+                        };
+                        
+                        storyboard.Begin();
+                    };
+                    fadeTimer.Start();
                 }
                 else
                 {
@@ -629,92 +695,166 @@ namespace App1
                 
                 int totalLoaded = 0;
                 var newWallpapersForDb = new List<Wallpaper>();
+                var existingKeys = new HashSet<string>(
+                    _wallpapers.Select(w => !string.IsNullOrEmpty(w.FullUrl) ? w.FullUrl : w.ThumbUrl)
+                               .Where(k => !string.IsNullOrEmpty(k)),
+                    StringComparer.OrdinalIgnoreCase);
                 
-                System.Diagnostics.Debug.WriteLine("[流式加载] 开始边获取边显示（Pexels + Bing + 360）...");
-                
-                // 【优先】获取Pexels高质量壁纸（请求15张，过滤后取5张）
-                try
+                void AddWallpapersToUi(IEnumerable<Wallpaper> wallpapers, string sourceTag, int? take = null)
                 {
-                    System.Diagnostics.Debug.WriteLine("[Pexels壁纸] 请求 15 张（过滤后取5张横向）...");
-                    var pexelsWallpapers = await _pexelsApi.GetCuratedWallpapersAsync(perPage: 15);
-                    
-                    if (pexelsWallpapers.Count > 0)
+                    var items = take.HasValue ? wallpapers.Take(take.Value) : wallpapers;
+                    foreach (var wallpaper in items)
                     {
-                        // 只取前5张（已过滤为横向图片）
-                        var selectedWallpapers = pexelsWallpapers.Take(5).ToList();
-                        
-                        foreach (var wallpaper in selectedWallpapers)
+                        var key = !string.IsNullOrEmpty(wallpaper.FullUrl) ? wallpaper.FullUrl : wallpaper.ThumbUrl;
+                        if (string.IsNullOrEmpty(key) || !existingKeys.Add(key))
                         {
-                            // 立即显示
-                            _wallpapers.Add(wallpaper);
-                            newWallpapersForDb.Add(wallpaper);
-                            totalLoaded++;
-                            
-                            ShowEmpty(false);
+                            continue;
                         }
                         
-                        System.Diagnostics.Debug.WriteLine($"[Pexels壁纸] ✓ {selectedWallpapers.Count}/{pexelsWallpapers.Count} 张已显示（已过滤横向）");
+                        _wallpapers.Add(wallpaper);
+                        newWallpapersForDb.Add(wallpaper);
+                        totalLoaded++;
+                        ShowEmpty(false);
+                        System.Diagnostics.Debug.WriteLine($"[{sourceTag}] ✓ 已显示: {wallpaper.Title}");
+                    }
+                }
+                
+                System.Diagnostics.Debug.WriteLine("[流式加载] 开始边获取边显示壁纸（优先Pexels、Bing、360）...");
+
+                // 优先处理Pexels壁纸（第1优先级）
+                System.Diagnostics.Debug.WriteLine("[Pexels壁纸] 请求 15 张（过滤后取8张横向）...");
+                try
+                {
+                    var pexelsWallpapers = await _pexelsApi.GetCuratedWallpapersAsync(perPage: 15);
+                    var selectedWallpapers = pexelsWallpapers.ToList();
+                    if (selectedWallpapers.Count > 0)
+                    {
+                        AddWallpapersToUi(selectedWallpapers, "Pexels壁纸", 8);
                     }
                 }
                 catch (Exception ex)
                 {
                     System.Diagnostics.Debug.WriteLine($"[Pexels壁纸] 获取失败: {ex.Message}");
                 }
-                
-                // 【其次】循环5次，每次获取2张Bing壁纸（边获取边显示）
-                for (int i = 0; i < 5; i++)
-                {
-                    try
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[Bing壁纸] 第 {i + 1}/5 批，获取 2 张...");
-                        var bingWallpapers = await _bingApi.GetDailyWallpapersAsync(2);
-                        
-                        if (bingWallpapers.Count > 0)
-                        {
-                            foreach (var wallpaper in bingWallpapers)
-                            {
-                                // 立即显示
-                                _wallpapers.Add(wallpaper);
-                                newWallpapersForDb.Add(wallpaper);
-                                totalLoaded++;
-                                
-                                ShowEmpty(false);
-                            }
-                            
-                            System.Diagnostics.Debug.WriteLine($"[Bing壁纸] ✓ 第 {i + 1} 批 {bingWallpapers.Count} 张已显示");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[Bing壁纸] 第 {i + 1} 批获取失败: {ex.Message}");
-                    }
-                }
-                
-                // 【最后】一次性获取3张360壁纸
+
+                // 优先处理Bing历史壁纸（第2优先级）
+                System.Diagnostics.Debug.WriteLine("[Bing壁纸] 获取 5 张...");
                 try
                 {
-                    System.Diagnostics.Debug.WriteLine("[360壁纸] 一次性获取 3 张...");
-                    var qihu360Wallpapers = await _qihuApi.GetWallpapersAsync(countPerCategory: 3);
-                    
-                    if (qihu360Wallpapers.Count > 0)
+                    var bingWallpapers = await _bingApi.GetDailyWallpapersAsync(5);
+                    if (bingWallpapers.Count > 0)
                     {
-                        foreach (var wallpaper in qihu360Wallpapers)
-                        {
-                            // 立即显示
-                            _wallpapers.Add(wallpaper);
-                            newWallpapersForDb.Add(wallpaper);
-                            totalLoaded++;
-                            
-                            ShowEmpty(false);
-                        }
-                        
-                        System.Diagnostics.Debug.WriteLine($"[360壁纸] ✓ {qihu360Wallpapers.Count} 张已显示");
+                        AddWallpapersToUi(bingWallpapers, "Bing壁纸");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[Bing壁纸] 获取失败: {ex.Message}");
+                }
+
+                // 优先处理360壁纸（第3优先级）
+                System.Diagnostics.Debug.WriteLine("[360壁纸] 获取 2 张...");
+                try
+                {
+                    var qihuWallpapers = await _qihuApi.GetWallpapersAsync(countPerCategory: 2);
+                    if (qihuWallpapers.Count > 0)
+                    {
+                        AddWallpapersToUi(qihuWallpapers, "360壁纸");
                     }
                 }
                 catch (Exception ex)
                 {
                     System.Diagnostics.Debug.WriteLine($"[360壁纸] 获取失败: {ex.Message}");
                 }
+
+                // 并行处理其他壁纸源
+                var otherTasks = new Dictionary<string, Task<List<Wallpaper>>>();
+
+                // Dmoe
+                otherTasks["Dmoe壁纸"] = Task.Run(async () => {
+                    try
+                    {
+                        System.Diagnostics.Debug.WriteLine("[Dmoe壁纸] 获取 8 张...");
+                        return await _dmoeApi.GetWallpapersAsync(8);
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[Dmoe壁纸] 获取失败: {ex.Message}");
+                        return new List<Wallpaper>();
+                    }
+                });
+
+                // PAAA
+                otherTasks["PAAA壁纸"] = Task.Run(async () => {
+                    try
+                    {
+                        System.Diagnostics.Debug.WriteLine("[PAAA壁纸] 获取 6 张...");
+                        return await _paaaApi.GetWallpapersAsync(6);
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[PAAA壁纸] 获取失败: {ex.Message}");
+                        return new List<Wallpaper>();
+                    }
+                });
+
+                // Upx8
+                otherTasks["Upx8壁纸"] = Task.Run(async () => {
+                    try
+                    {
+                        System.Diagnostics.Debug.WriteLine("[Upx8壁纸] 获取 6 张...");
+                        return await _upx8Api.GetWallpapersAsync(6);
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[Upx8壁纸] 获取失败: {ex.Message}");
+                        return new List<Wallpaper>();
+                    }
+                });
+
+                // Seovx
+                otherTasks["Seovx壁纸"] = Task.Run(async () => {
+                    try
+                    {
+                        System.Diagnostics.Debug.WriteLine("[Seovx壁纸] 获取 6 张...");
+                        return await _seovxApi.GetWallpapersAsync(6);
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[Seovx壁纸] 获取失败: {ex.Message}");
+                        return new List<Wallpaper>();
+                    }
+                });
+
+                otherTasks["Unsplash壁纸"] = Task.Run(async () => {
+                    try
+                    {
+                        System.Diagnostics.Debug.WriteLine("[Unsplash壁纸] 获取 6 张...");
+                        return await _unsplashApi.GetRandomWallpapersAsync(6);
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[Unsplash壁纸] 获取失败: {ex.Message}");
+                        return new List<Wallpaper>();
+                    }
+                });
+
+                var pendingTasks = otherTasks.ToList();
+                while (pendingTasks.Count > 0)
+                {
+                    var completedTask = await Task.WhenAny(pendingTasks.Select(t => t.Value));
+                    var completedEntry = pendingTasks.First(t => t.Value == completedTask);
+                    pendingTasks.Remove(completedEntry);
+                    
+                    var result = await completedEntry.Value;
+                    if (result.Count > 0)
+                    {
+                        AddWallpapersToUi(result, completedEntry.Key);
+                    }
+                }
+
+                System.Diagnostics.Debug.WriteLine($"[流式加载] 加载完成，共加载 {totalLoaded} 张壁纸");
+                
                 
                 // 批量保存到数据库（后台操作，不阻塞UI）
                 if (newWallpapersForDb.Count > 0 && _repository != null)
@@ -784,14 +924,17 @@ namespace App1
         {
             var scrollViewer = sender as ScrollViewer;
             if (scrollViewer == null) return;
+            if (_isImmersiveMode || _isLoadingMore) return;
             
-            // 检测是否接近底部（距离底部200像素时触发）
             var verticalOffset = scrollViewer.VerticalOffset;
-            var maxVerticalOffset = scrollViewer.ScrollableHeight;
-            
-            if (maxVerticalOffset - verticalOffset < 200 && !_isLoadingMore)
+            var offsetDelta = Math.Abs(verticalOffset - _lastScrollOffset);
+            var now = DateTime.Now;
+            var elapsedMs = (now - _lastWheelTime).TotalMilliseconds;
+            if (offsetDelta > 10 && elapsedMs >= WHEEL_THROTTLE_MS)
             {
-                System.Diagnostics.Debug.WriteLine("[滚动检测] 接近底部，加载更多...");
+                _lastScrollOffset = verticalOffset;
+                _lastWheelTime = now;
+                System.Diagnostics.Debug.WriteLine("[滚动检测] 检测到滚动，加载更多...");
                 try
                 {
                     await LoadMoreWallpapersAsync();
@@ -816,10 +959,6 @@ namespace App1
         /// </summary>
         private async void WallpaperItem_DoubleTapped(object sender, Microsoft.UI.Xaml.Input.DoubleTappedRoutedEventArgs e)
         {
-            // 取消单击等待，防止触发全屏查看
-            _isWaitingForDoubleClick = false;
-            _pendingClickWallpaper = null;
-            
             // 从DataContext获取Wallpaper对象
             if (sender is FrameworkElement element && element.DataContext is Wallpaper wallpaper)
             {
@@ -1219,108 +1358,68 @@ namespace App1
                 int loadedCount = 0;
                 bool isFirstLoad = _immersiveWallpapers.Count == 0;
                 
-                // 并行加载四个源，每获取一张立即添加
+                void AddImmersiveWallpaper(Wallpaper wallpaper, string sourceTag)
+                {
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        _immersiveWallpapers.Add(wallpaper);
+                        loadedCount++;
+                        
+                        if (isFirstLoad && _immersiveWallpapers.Count == 1)
+                        {
+                            ImmersiveFlipView.SelectedIndex = 0;
+                        }
+                        
+                        System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ✓ {sourceTag}: {wallpaper.Title} (立即显示)");
+                    });
+                }
+
+                // 首轮优先顺序：Pexels -> Bing -> 360
+                try
+                {
+                    var pexelsWallpapers = await _pexelsApi.GetCuratedWallpapersAsync(perPage: 5);
+                    if (pexelsWallpapers.Count > 0)
+                    {
+                        AddImmersiveWallpaper(pexelsWallpapers.First(), "Pexels");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ❌ Pexels失败: {ex.GetType().Name} - {ex.Message}");
+                    System.Diagnostics.Debug.WriteLine($"[沉浸式加载] 详细信息: {ex}");
+                }
+
+                try
+                {
+                    var bingWallpapers = await _bingApi.GetDailyWallpapersAsync(1);
+                    if (bingWallpapers.Count > 0)
+                    {
+                        AddImmersiveWallpaper(bingWallpapers.First(), "Bing");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ❌ Bing失败: {ex.GetType().Name} - {ex.Message}");
+                    System.Diagnostics.Debug.WriteLine($"[沉浸式加载] 详细信息: {ex}");
+                }
+
+                try
+                {
+                    var qihuWallpapers = await _qihuApi.GetWallpapersAsync(countPerCategory: 1);
+                    if (qihuWallpapers.Count > 0)
+                    {
+                        AddImmersiveWallpaper(qihuWallpapers.First(), "360");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ❌ 360失败: {ex.GetType().Name} - {ex.Message}");
+                    System.Diagnostics.Debug.WriteLine($"[沉浸式加载] 详细信息: {ex}");
+                }
+                
+                // 并行加载其余源，每获取一张立即添加
                 var tasks = new List<System.Threading.Tasks.Task>
                 {
-                    // Pexels
-                    System.Threading.Tasks.Task.Run(async () =>
-                    {
-                        try
-                        {
-                            var pexelsWallpapers = await _pexelsApi.GetCuratedWallpapersAsync(perPage: 5);
-                            if (pexelsWallpapers.Count > 0)
-                            {
-                                var wallpaper = pexelsWallpapers.First();
-                                
-                                // 立即添加到UI线程
-                                DispatcherQueue.TryEnqueue(() =>
-                                {
-                                    _immersiveWallpapers.Add(wallpaper);
-                                    loadedCount++;
-                                    
-                                    // 如果是第一张，立即选中
-                                    if (isFirstLoad && _immersiveWallpapers.Count == 1)
-                                    {
-                                        ImmersiveFlipView.SelectedIndex = 0;
-                                    }
-                                    
-                                    System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ✓ Pexels: {wallpaper.Title} (立即显示)");
-                                });
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ❌ Pexels失败: {ex.GetType().Name} - {ex.Message}");
-                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] 详细信息: {ex}");
-                        }
-                    }),
-                    
-                    // Bing
-                    System.Threading.Tasks.Task.Run(async () =>
-                    {
-                        try
-                        {
-                            var bingWallpapers = await _bingApi.GetDailyWallpapersAsync(1);
-                            if (bingWallpapers.Count > 0)
-                            {
-                                var wallpaper = bingWallpapers.First();
-                                
-                                // 立即添加到UI线程
-                                DispatcherQueue.TryEnqueue(() =>
-                                {
-                                    _immersiveWallpapers.Add(wallpaper);
-                                    loadedCount++;
-                                    
-                                    // 如果是第一张，立即选中
-                                    if (isFirstLoad && _immersiveWallpapers.Count == 1)
-                                    {
-                                        ImmersiveFlipView.SelectedIndex = 0;
-                                    }
-                                    
-                                    System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ✓ Bing: {wallpaper.Title} (立即显示)");
-                                });
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ❌ Bing失败: {ex.GetType().Name} - {ex.Message}");
-                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] 详细信息: {ex}");
-                        }
-                    }),
-                    
-                    // 360
-                    System.Threading.Tasks.Task.Run(async () =>
-                    {
-                        try
-                        {
-                            var qihuWallpapers = await _qihuApi.GetWallpapersAsync(countPerCategory: 1);
-                            if (qihuWallpapers.Count > 0)
-                            {
-                                var wallpaper = qihuWallpapers.First();
-                                
-                                // 立即添加到UI线程
-                                DispatcherQueue.TryEnqueue(() =>
-                                {
-                                    _immersiveWallpapers.Add(wallpaper);
-                                    loadedCount++;
-                                    
-                                    // 如果是第一张，立即选中
-                                    if (isFirstLoad && _immersiveWallpapers.Count == 1)
-                                    {
-                                        ImmersiveFlipView.SelectedIndex = 0;
-                                    }
-                                    
-                                    System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ✓ 360: {wallpaper.Title} (立即显示)");
-                                });
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ❌ 360失败: {ex.GetType().Name} - {ex.Message}");
-                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] 详细信息: {ex}");
-                        }
-                    }),
-                    
                     // Unsplash
                     System.Threading.Tasks.Task.Run(async () =>
                     {
@@ -1331,20 +1430,7 @@ namespace App1
                             {
                                 var wallpaper = unsplashWallpapers.First();
                                 
-                                // 立即添加到UI线程
-                                DispatcherQueue.TryEnqueue(() =>
-                                {
-                                    _immersiveWallpapers.Add(wallpaper);
-                                    loadedCount++;
-                                    
-                                    // 如果是第一张，立即选中
-                                    if (isFirstLoad && _immersiveWallpapers.Count == 1)
-                                    {
-                                        ImmersiveFlipView.SelectedIndex = 0;
-                                    }
-                                    
-                                    System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ✓ Unsplash: {wallpaper.Title} (立即显示)");
-                                });
+                                AddImmersiveWallpaper(wallpaper, "Unsplash");
                             }
                         }
                         catch (Exception ex)
@@ -1352,7 +1438,91 @@ namespace App1
                             System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ❌ Unsplash失败: {ex.GetType().Name} - {ex.Message}");
                             System.Diagnostics.Debug.WriteLine($"[沉浸式加载] 详细信息: {ex}");
                         }
-                    })
+                    }),
+                    
+
+                    
+                    // Dmoe
+                    System.Threading.Tasks.Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var dmoeWallpapers = await _dmoeApi.GetWallpapersAsync(1);
+                            if (dmoeWallpapers.Count > 0)
+                            {
+                                var wallpaper = dmoeWallpapers.First();
+                                
+                                AddImmersiveWallpaper(wallpaper, "Dmoe");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ❌ Dmoe失败: {ex.GetType().Name} - {ex.Message}");
+                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] 详细信息: {ex}");
+                        }
+                    }),
+                    
+                    // PAAA
+                    System.Threading.Tasks.Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var paaaWallpapers = await _paaaApi.GetWallpapersAsync(1);
+                            if (paaaWallpapers.Count > 0)
+                            {
+                                var wallpaper = paaaWallpapers.First();
+                                
+                                AddImmersiveWallpaper(wallpaper, "PAAA");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ❌ PAAA失败: {ex.GetType().Name} - {ex.Message}");
+                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] 详细信息: {ex}");
+                        }
+                    }),
+                    
+                    // Upx8
+                    System.Threading.Tasks.Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var upx8Wallpapers = await _upx8Api.GetWallpapersAsync(1);
+                            if (upx8Wallpapers.Count > 0)
+                            {
+                                var wallpaper = upx8Wallpapers.First();
+                                
+                                AddImmersiveWallpaper(wallpaper, "Upx8");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ❌ Upx8失败: {ex.GetType().Name} - {ex.Message}");
+                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] 详细信息: {ex}");
+                        }
+                    }),
+                    
+                    // Seovx
+                    System.Threading.Tasks.Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var seovxWallpapers = await _seovxApi.GetWallpapersAsync(1);
+                            if (seovxWallpapers.Count > 0)
+                            {
+                                var wallpaper = seovxWallpapers.First();
+                                
+                                AddImmersiveWallpaper(wallpaper, "Seovx");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ❌ Seovx失败: {ex.GetType().Name} - {ex.Message}");
+                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] 详细信息: {ex}");
+                        }
+                    }),
+                    
+
                 };
                 
                 // 等待所有任务完成
@@ -1915,7 +2085,7 @@ namespace App1
         /// <summary>
         /// 启动壁纸定时切换
         /// </summary>
-        private void StartWallpaperTimer(bool isDesktop, double intervalMinutes)
+        private void StartWallpaperTimer(bool isDesktop, double intervalMinutes, bool saveSettings = true)
         {
             try
             {
@@ -1939,7 +2109,10 @@ namespace App1
                     // 更新设置
                     _appSettings.IsDesktopTimerEnabled = true;
                     _appSettings.DesktopTimerInterval = intervalMinutes;
-                    SaveAppSettings();
+                    if (saveSettings)
+                    {
+                        SaveAppSettings();
+                    }
 
                     System.Diagnostics.Debug.WriteLine($"[定时器] 桌面定时器已启动，间隔: {intervalMinutes}分钟");
                 }
@@ -1963,7 +2136,10 @@ namespace App1
                     // 更新设置
                     _appSettings.IsLockScreenTimerEnabled = true;
                     _appSettings.LockScreenTimerInterval = intervalMinutes;
-                    SaveAppSettings();
+                    if (saveSettings)
+                    {
+                        SaveAppSettings();
+                    }
 
                     System.Diagnostics.Debug.WriteLine($"[定时器] 锁屏定时器已启动，间隔: {intervalMinutes}分钟");
                 }
@@ -1987,18 +2163,8 @@ namespace App1
             {
                 System.Diagnostics.Debug.WriteLine("[定时器] 桌面壁纸定时切换触发");
 
-                // 随机选择一张壁纸
-                Wallpaper? wallpaper = null;
-                if (_wallpapers.Count > 0)
-                {
-                    var random = new Random();
-                    wallpaper = _wallpapers[random.Next(_wallpapers.Count)];
-                }
-                else if (_immersiveWallpapers.Count > 0)
-                {
-                    var random = new Random();
-                    wallpaper = _immersiveWallpapers[random.Next(_immersiveWallpapers.Count)];
-                }
+                // 从API获取新的随机壁纸
+                var wallpaper = await GetRandomWallpaperFromApiAsync();
 
                 if (wallpaper != null)
                 {
@@ -2020,18 +2186,8 @@ namespace App1
             {
                 System.Diagnostics.Debug.WriteLine("[定时器] 锁屏壁纸定时切换触发");
 
-                // 随机选择一张壁纸
-                Wallpaper? wallpaper = null;
-                if (_wallpapers.Count > 0)
-                {
-                    var random = new Random();
-                    wallpaper = _wallpapers[random.Next(_wallpapers.Count)];
-                }
-                else if (_immersiveWallpapers.Count > 0)
-                {
-                    var random = new Random();
-                    wallpaper = _immersiveWallpapers[random.Next(_immersiveWallpapers.Count)];
-                }
+                // 从API获取新的随机壁纸
+                var wallpaper = await GetRandomWallpaperFromApiAsync();
 
                 if (wallpaper != null)
                 {
@@ -2151,22 +2307,7 @@ namespace App1
             }
         }
 
-        /// <summary>
-        /// 更新开机启动菜单项状态
-        /// </summary>
-        private void UpdateStartupMenuItemStatus()
-        {
-            try
-            {
-                // 由于 UI 元素可能尚未初始化，暂时注释掉菜单项更新
-                // 在实际使用中，菜单项的文本会在右键菜单打开时动态更新
-                System.Diagnostics.Debug.WriteLine("[开机启动] 菜单项状态已更新");
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[UI] 更新开机启动菜单项失败: {ex.Message}");
-            }
-        }
+
 
         /// <summary>
         /// 检查开机启动任务状态
@@ -2180,7 +2321,6 @@ namespace App1
                     // 后台检查开机启动状态
                     bool isEnabled = IsStartupEnabled();
                     _appSettings.IsStartupEnabled = isEnabled;
-                    SaveAppSettings();
 
                     // 在UI线程更新菜单项
                     this.DispatcherQueue.TryEnqueue(() =>
@@ -2204,11 +2344,129 @@ namespace App1
         {
             try
             {
-                // 可以在这里添加右键菜单的动态更新逻辑
+                System.Diagnostics.Debug.WriteLine("[UI] 右键菜单打开事件触发");
+                
+                if (sender is MenuFlyout menuFlyout)
+                {
+                    // 更新开机自启菜单项状态
+                    UpdateStartupMenuItemStatus(menuFlyout);
+                    
+                    // 更新定时切换菜单项状态
+                    UpdateTimerMenuItemStatus(menuFlyout);
+                }
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[UI] 右键菜单打开失败: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 更新开机自启菜单项状态（无参数重载）
+        /// </summary>
+        private void UpdateStartupMenuItemStatus()
+        {
+            // 当没有菜单引用时，不做任何操作
+            // 此方法用于在设置更改后被调用，但此时菜单可能未打开
+            System.Diagnostics.Debug.WriteLine("[UI] 调用无参数的UpdateStartupMenuItemStatus");
+        }
+
+        /// <summary>
+        /// 更新开机自启菜单项状态
+        /// </summary>
+        private void UpdateStartupMenuItemStatus(MenuFlyout menuFlyout)
+        {
+            try
+            {
+                bool isEnabled = IsStartupEnabled();
+                
+                // 遍历菜单项找到开机自启菜单项
+                foreach (var item in menuFlyout.Items)
+                {
+                    if (item is MenuFlyoutItem menuItem && menuItem.Text.Contains("开机启动"))
+                    {
+                        menuItem.Text = isEnabled ? "开机启动 ✓" : "开机启动";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[UI] 更新开机自启菜单项失败: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 更新定时切换菜单项状态
+        /// </summary>
+        private void UpdateTimerMenuItemStatus(MenuFlyout menuFlyout)
+        {
+            try
+            {
+                // 获取当前的定时设置
+                double desktopInterval = _appSettings.DesktopTimerInterval;
+                double lockScreenInterval = _appSettings.LockScreenTimerInterval;
+                bool isDesktopEnabled = _appSettings.IsDesktopTimerEnabled;
+                bool isLockScreenEnabled = _appSettings.IsLockScreenTimerEnabled;
+                
+                System.Diagnostics.Debug.WriteLine($"[定时设置] 桌面: {desktopInterval}分钟, 锁屏: {lockScreenInterval}分钟");
+                
+                // 遍历菜单项找到定时切换菜单项
+                foreach (var item in menuFlyout.Items)
+                {
+                    if (item is MenuFlyoutSubItem subItem)
+                    {
+                        // 处理桌面背景定时切换
+                        if (subItem.Text.Contains("桌面背景定时切换"))
+                        {
+                            UpdateTimerSubMenuItem(subItem, desktopInterval, isDesktopEnabled);
+                        }
+                        // 处理锁屏界面定时切换
+                        else if (subItem.Text.Contains("锁屏界面定时切换"))
+                        {
+                            UpdateTimerSubMenuItem(subItem, lockScreenInterval, isLockScreenEnabled);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[UI] 更新定时切换菜单项失败: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 更新定时切换子菜单项状态
+        /// </summary>
+        private void UpdateTimerSubMenuItem(MenuFlyoutSubItem subItem, double interval, bool isEnabled)
+        {
+            try
+            {
+                foreach (var item in subItem.Items)
+                {
+                    if (item is MenuFlyoutItem menuItem)
+                    {
+                        // 移除所有的对勾
+                        menuItem.Text = menuItem.Text.Replace(" ✓", "");
+                        
+                        // 根据当前设置添加对勾
+                        if (menuItem.Tag != null)
+                        {
+                            string tag = menuItem.Tag.ToString();
+                            if (tag == "0" && !isEnabled)
+                            {
+                                menuItem.Text += " ✓";
+                            }
+                            else if (double.TryParse(tag, out double tagInterval) && tagInterval == interval && isEnabled)
+                            {
+                                menuItem.Text += " ✓";
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[UI] 更新定时子菜单项失败: {ex.Message}");
             }
         }
 
@@ -2264,11 +2522,21 @@ namespace App1
         {
             try
             {
-                if (_currentContextWallpaper != null)
+                if (_currentContextWallpaper == null)
                 {
-                    // 这里可以添加下载图片的逻辑
-                    ShowToast("图片下载功能开发中", isSuccess: false);
+                    ShowToast("请先选择要下载的图片", isSuccess: false);
+                    return;
                 }
+
+                var downloadPath = await SaveWallpaperToDownloadFolderAsync(_currentContextWallpaper);
+                if (!string.IsNullOrEmpty(downloadPath))
+                {
+                    ShowToast($"下载成功：{downloadPath}", isSuccess: true, durationMs: 4000);
+                    System.Diagnostics.Debug.WriteLine($"[下载] 下载成功: {downloadPath}");
+                    return;
+                }
+
+                ShowToast("下载失败", isSuccess: false);
             }
             catch (Exception ex)
             {
@@ -2277,10 +2545,80 @@ namespace App1
             }
         }
 
+        private async Task<string> SaveWallpaperToDownloadFolderAsync(Wallpaper wallpaper)
+        {
+            var imageUrl = !string.IsNullOrWhiteSpace(wallpaper.FullUrl) ? wallpaper.FullUrl : wallpaper.ThumbUrl;
+            if (string.IsNullOrWhiteSpace(imageUrl))
+            {
+                return string.Empty;
+            }
+
+            var picturesFolder = System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyPictures);
+            var downloadFolder = System.IO.Path.Combine(picturesFolder, "小K壁纸", "下载");
+            if (!System.IO.Directory.Exists(downloadFolder))
+            {
+                System.IO.Directory.CreateDirectory(downloadFolder);
+            }
+
+            var invalidChars = System.IO.Path.GetInvalidFileNameChars();
+            var baseNameChars = (wallpaper.Title ?? "wallpaper")
+                .Select(ch => invalidChars.Contains(ch) ? '_' : ch)
+                .ToArray();
+            var baseName = new string(baseNameChars).Trim();
+            if (string.IsNullOrWhiteSpace(baseName))
+            {
+                baseName = "wallpaper";
+            }
+            if (baseName.Length > 60)
+            {
+                baseName = baseName.Substring(0, 60);
+            }
+
+            var extension = ".jpg";
+            if (Uri.TryCreate(imageUrl, UriKind.Absolute, out var uri))
+            {
+                var pathExtension = System.IO.Path.GetExtension(uri.AbsolutePath);
+                if (!string.IsNullOrWhiteSpace(pathExtension) && pathExtension.Length <= 5)
+                {
+                    extension = pathExtension;
+                }
+            }
+
+            var fileName = $"{baseName}_{DateTime.Now:yyyyMMdd_HHmmss}{extension}";
+            var savePath = System.IO.Path.Combine(downloadFolder, fileName);
+
+            if (!string.IsNullOrWhiteSpace(wallpaper.LocalPath) && System.IO.File.Exists(wallpaper.LocalPath))
+            {
+                System.IO.File.Copy(wallpaper.LocalPath, savePath, overwrite: false);
+                return savePath;
+            }
+
+            var cachedPath = await DownloadImageToLocalAsync(imageUrl, wallpaper.Title ?? "wallpaper");
+            if (!string.IsNullOrWhiteSpace(cachedPath) && System.IO.File.Exists(cachedPath))
+            {
+                wallpaper.LocalPath = cachedPath;
+                System.IO.File.Copy(cachedPath, savePath, overwrite: false);
+                return savePath;
+            }
+
+            using var httpClient = new System.Net.Http.HttpClient(new System.Net.Http.HttpClientHandler
+            {
+                UseProxy = false,
+                Proxy = null
+            })
+            {
+                Timeout = TimeSpan.FromSeconds(30)
+            };
+
+            var imageBytes = await httpClient.GetByteArrayAsync(imageUrl);
+            await System.IO.File.WriteAllBytesAsync(savePath, imageBytes);
+            return savePath;
+        }
+
         /// <summary>
         /// 清理缓存事件
         /// </summary>
-        private async void ClearCache_Click(object sender, RoutedEventArgs e)
+        private void ClearCache_Click(object sender, RoutedEventArgs e)
         {
             try
             {
@@ -2291,6 +2629,59 @@ namespace App1
             {
                 System.Diagnostics.Debug.WriteLine($"[缓存] 清理失败: {ex.Message}");
                 ShowToast("清理失败", isSuccess: false);
+            }
+        }
+
+        /// <summary>
+        /// 随机选择API并获取新的随机图片
+        /// </summary>
+        private async Task<Wallpaper?> GetRandomWallpaperFromApiAsync()
+        {
+            try
+            {
+                var random = new Random();
+                var apiChoice = random.Next(2); // 0: Pexels, 1: Bing
+                List<Wallpaper> wallpapers = new List<Wallpaper>();
+
+                switch (apiChoice)
+                {
+                    case 0:
+                        // 从Pexels获取随机图片
+                        System.Diagnostics.Debug.WriteLine("[定时器] 从Pexels API获取随机壁纸");
+                        wallpapers = await _pexelsApi.GetCuratedWallpapersAsync(5);
+                        break;
+                    case 1:
+                        // 从Bing获取随机图片
+                        System.Diagnostics.Debug.WriteLine("[定时器] 从Bing API获取随机壁纸");
+                        wallpapers = await _bingApi.GetDailyWallpapersAsync(5);
+                        break;
+                }
+
+                if (wallpapers.Count > 0)
+                {
+                    // 从获取的壁纸中随机选择一张
+                    var selectedWallpaper = wallpapers[random.Next(wallpapers.Count)];
+                    System.Diagnostics.Debug.WriteLine($"[定时器] 选择壁纸: {selectedWallpaper.Title}");
+                    return selectedWallpaper;
+                }
+
+                // 如果API获取失败，回退到本地缓存
+                System.Diagnostics.Debug.WriteLine("[定时器] API获取失败，回退到本地缓存");
+                if (_wallpapers.Count > 0)
+                {
+                    return _wallpapers[random.Next(_wallpapers.Count)];
+                }
+                else if (_immersiveWallpapers.Count > 0)
+                {
+                    return _immersiveWallpapers[random.Next(_immersiveWallpapers.Count)];
+                }
+
+                return null;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[定时器] 获取随机壁纸失败: {ex.Message}");
+                return null;
             }
         }
 

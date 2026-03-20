@@ -25,6 +25,25 @@ namespace App1.Models
         /// </summary>
         Unsplash,
         
+        /// <summary>
+        /// Dmoe樱花随机二次元壁纸
+        /// </summary>
+        Dmoe,
+        
+        /// <summary>
+        /// PAAA随机壁纸
+        /// </summary>
+        Paaa,
+        
+        /// <summary>
+        /// Upx8壁纸
+        /// </summary>
+        Upx8,
+        
+        /// <summary>
+        /// Seovx壁纸
+        /// </summary>
+        Seovx,
         
         /// <summary>
         /// Windows系统内置壁纸
