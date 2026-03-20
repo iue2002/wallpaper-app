@@ -16,6 +16,10 @@ namespace App1.Services
     public class WallpaperManager
     {
         private readonly IPeapixApiService _apiService;
+        private readonly DmoeApiService _dmoeApiService;
+        private readonly PaaaApiService _paaaApiService;
+        private readonly Upx8ApiService _upx8ApiService;
+        private readonly SeovxApiService _seovxApiService;
         private readonly WallpaperRepository _repository;
         private readonly CacheService _cacheService;
         
@@ -25,6 +29,10 @@ namespace App1.Services
             CacheService cacheService)
         {
             _apiService = apiService;
+            _dmoeApiService = new DmoeApiService();
+            _paaaApiService = new PaaaApiService();
+            _upx8ApiService = new Upx8ApiService();
+            _seovxApiService = new SeovxApiService();
             _repository = repository;
             _cacheService = cacheService;
         }
@@ -107,10 +115,23 @@ namespace App1.Services
             var lastUpdate = await _repository.GetLastUpdateTimeAsync(source);
             var elapsed = DateTime.Now - lastUpdate;
             
-            // Bing每天更新一次，Spotlight每周更新一次
-            var threshold = source == WallpaperSource.Bing 
-                ? TimeSpan.FromHours(AppConfig.UpdateIntervalHours)   // Bing：24小时
-                : TimeSpan.FromDays(7);                               // Spotlight：7天
+            // 根据不同来源设置不同的更新阈值
+            TimeSpan threshold;
+            switch (source)
+                {
+                    case WallpaperSource.Bing:
+                        threshold = TimeSpan.FromHours(AppConfig.UpdateIntervalHours); // Bing：24小时
+                        break;
+                    case WallpaperSource.Dmoe:
+                    case WallpaperSource.Paaa:
+                    case WallpaperSource.Upx8:
+                    case WallpaperSource.Seovx:
+                        threshold = TimeSpan.FromHours(6); // 新壁纸源：6小时
+                        break;
+                    default:
+                        threshold = TimeSpan.FromDays(7); // 其他：7天
+                        break;
+                }
             
             return elapsed > threshold;
         }
@@ -123,6 +144,10 @@ namespace App1.Services
             return source switch
             {
                 WallpaperSource.Bing => await _apiService.GetBingWallpapersAsync(),
+                WallpaperSource.Dmoe => await _dmoeApiService.GetWallpapersAsync(10),
+                WallpaperSource.Paaa => await _paaaApiService.GetWallpapersAsync(10),
+                WallpaperSource.Upx8 => await _upx8ApiService.GetWallpapersAsync(10),
+                WallpaperSource.Seovx => await _seovxApiService.GetWallpapersAsync(10),
                 _ => new List<Wallpaper>()
             };
         }
