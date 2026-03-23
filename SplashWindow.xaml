@@ -17,7 +17,8 @@
                     Spacing="30">
             
             <!-- Logo 图片 -->
-            <Image Source="Assets/SplashScreen.scale-200.png"
+                 <Image x:Name="SplashLogoImage"
+                     Source="Assets/SplashScreen.png"
                    Width="200"
                    Height="200"
                    Stretch="Uniform"/>
