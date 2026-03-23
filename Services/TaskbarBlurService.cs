@@ -10,6 +10,7 @@ namespace App1.Services
     public class TaskbarBlurService : IDisposable
     {
         private IntPtr _taskbarHwnd = IntPtr.Zero;
+        private IntPtr _secondTaskbarHwnd = IntPtr.Zero; // Windows 11 可能有第二个任务栏
         private bool _isEnabled = false;
         private bool _disposed = false;
 
@@ -23,6 +24,7 @@ namespace App1.Services
 
         // 任务栏类名
         private const string TASKBAR_CLASS_NAME = "Shell_TrayWnd";
+        private const string SECOND_TASKBAR_CLASS_NAME = "Shell_SecondaryTrayWnd";
 
         /// <summary>
         /// 获取或设置任务栏透明效果是否启用
@@ -48,12 +50,23 @@ namespace App1.Services
         {
             try
             {
+                // 查找主任务栏
                 _taskbarHwnd = FindWindow(TASKBAR_CLASS_NAME, null);
                 if (_taskbarHwnd == IntPtr.Zero)
                 {
-                    System.Diagnostics.Debug.WriteLine("[任务栏透明] 未找到任务栏窗口");
-                    return false;
+                    System.Diagnostics.Debug.WriteLine("[任务栏透明] 未找到主任务栏窗口");
                 }
+
+                // 查找副任务栏（Windows 11 多屏可能使用）
+                EnumWindows((hwnd, lParam) =>
+                {
+                    if (GetClassName(hwnd) == SECOND_TASKBAR_CLASS_NAME)
+                    {
+                        _secondTaskbarHwnd = hwnd;
+                        System.Diagnostics.Debug.WriteLine($"[任务栏透明] 找到副任务栏: {hwnd}");
+                    }
+                    return true;
+                }, IntPtr.Zero);
 
                 _isEnabled = true;
                 ApplyEffect();
@@ -89,6 +102,12 @@ namespace App1.Services
                 _isEnabled = false;
                 SetAccentPolicy(_taskbarHwnd, ACCENT_NORMAL, 0, 0);
 
+                // 同时处理副任务栏
+                if (_secondTaskbarHwnd != IntPtr.Zero)
+                {
+                    SetAccentPolicy(_secondTaskbarHwnd, ACCENT_NORMAL, 0, 0);
+                }
+
                 // 发送 DWM 通知让系统重新渲染任务栏
                 SendMessage(_taskbarHwnd, WM_DWMCOMPOSITIONCHANGED, IntPtr.Zero, IntPtr.Zero);
 
@@ -120,14 +139,31 @@ namespace App1.Services
 
             if (_isEnabled)
             {
-                // 亚克力效果: ABGR 颜色格式, Alpha=30 (约12%透明度)
-                // 0x1E000000 = 半透明黑色背景，带轻微模糊
-                uint color = 0x1E000000;
-                SetAccentPolicy(_taskbarHwnd, ACCENT_ENABLE_ACRYLICBLURBEHIND, 2, color);
+                // 使用完全透明的渐变效果，ABGR格式
+                // 0x59000000 = Alpha=89 (约35%透明度)，黑色背景
+                // 0x80000000 = Alpha=128 (约50%透明度)
+                uint color = 0x80000000;
+
+                // 应用到主任务栏
+                SetAccentPolicy(_taskbarHwnd, ACCENT_ENABLE_TRANSPARENTGRADIENT, 2, color);
+
+                // 应用到副任务栏
+                if (_secondTaskbarHwnd != IntPtr.Zero)
+                {
+                    SetAccentPolicy(_secondTaskbarHwnd, ACCENT_ENABLE_TRANSPARENTGRADIENT, 2, color);
+                }
+
+                System.Diagnostics.Debug.WriteLine($"[任务栏透明] 已应用透明效果: 0x{color:X8}");
             }
             else
             {
                 SetAccentPolicy(_taskbarHwnd, ACCENT_NORMAL, 0, 0);
+
+                if (_secondTaskbarHwnd != IntPtr.Zero)
+                {
+                    SetAccentPolicy(_secondTaskbarHwnd, ACCENT_NORMAL, 0, 0);
+                }
+
                 SendMessage(_taskbarHwnd, WM_DWMCOMPOSITIONCHANGED, IntPtr.Zero, IntPtr.Zero);
             }
         }
@@ -178,6 +214,14 @@ namespace App1.Services
         // 任务栏查找
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern IntPtr FindWindow(string lpClassName, string? lpWindowName);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern string GetClassName(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
+
+        private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
         [DllImport("user32.dll", CharSet = CharSet.Auto)]
         private static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);

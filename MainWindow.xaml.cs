@@ -580,7 +580,8 @@ namespace App1
                 _appSettings.IsStartupEnabled = IsStartupEnabled();
                 _appSettings.IsDesktopTimerEnabled = _isDesktopTimerEnabled;
                 _appSettings.IsLockScreenTimerEnabled = _isLockScreenTimerEnabled;
-                
+                _appSettings.IsTaskbarBlurEnabled = _taskbarBlurService != null && _taskbarBlurService.IsEnabled;
+
                 // 保存定时器间隔时间
                 // 如果定时器正在运行，从定时器对象获取最新的间隔时间
                 if (_desktopWallpaperTimer != null)
@@ -2303,9 +2304,9 @@ namespace App1
                     }
                 }
 
-                // 更新设置
+                // 直接保存设置，避免触发SaveAppSettings中的其他提示
                 _appSettings.IsTaskbarBlurEnabled = newState;
-                SaveAppSettings();
+                SettingsManager.SaveSettings(_appSettings);
 
                 // 更新菜单项状态
                 UpdateTaskbarBlurMenuItemStatus();
