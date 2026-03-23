@@ -268,8 +268,8 @@ namespace App1.Services
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern IntPtr FindWindow(string lpClassName, string? lpWindowName);
 
-        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
-        private static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern int GetClassNameW(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
         [DllImport("user32.dll")]
         private static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
@@ -291,7 +291,7 @@ namespace App1.Services
         {
             const int nMaxCount = 256;
             StringBuilder className = new StringBuilder(nMaxCount);
-            GetClassName(hWnd, className, nMaxCount);
+            GetClassNameW(hWnd, className, nMaxCount);
             return className.ToString();
         }
 
