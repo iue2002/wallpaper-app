@@ -23,7 +23,9 @@ $arch = switch ($Runtime) {
 }
 
 $productDisplayName = '小K壁纸'
-$safeName = $productDisplayName -replace '[\\/:*?"<>| ]','_'
+
+# 使用英文文件名避免编码问题
+$safeName = 'KWallpaper'
 $msiPath = Join-Path $outDir ("{0}-{1}-{2}.msi" -f $safeName, $Version, $Runtime)
 $wxsPath = Join-Path $PSScriptRoot "Product.wxs"
 
