@@ -36,7 +36,7 @@ namespace App1
         private readonly CacheService _cacheService;
         private readonly WallpaperService _wallpaperService;
         private TrayManager? _trayManager; // 托盘管理器
-        private TaskbarBlurService? _taskbarBlurService; // 任务栏透明服务
+        private TaskbarBlurServiceV2? _taskbarBlurService; // 任务栏透明服务
         
         private readonly ObservableCollection<Wallpaper> _wallpapers = new();
         private bool _isLoadingMore = false;
@@ -170,7 +170,7 @@ namespace App1
             });
 
             // 初始化任务栏透明服务
-            _taskbarBlurService = new TaskbarBlurService();
+            _taskbarBlurService = new TaskbarBlurServiceV2();
 
             // 开机自启后台启动：初始化后直接隐藏窗口，仅保留托盘
             if (_startHiddenOnLaunch)

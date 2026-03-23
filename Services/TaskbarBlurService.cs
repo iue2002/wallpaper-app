@@ -12,7 +12,8 @@ namespace App1.Services
     {
         private IntPtr _taskbarHwnd = IntPtr.Zero;
         private IntPtr _secondTaskbarHwnd = IntPtr.Zero; // Windows 11 可能有第二个任务栏
-        private IntPtr _taskbarButtonHwnd = IntPtr.Zero; // 任务栏按钮区域（Windows 11）
+        private IntPtr _rebarWindowHwnd = IntPtr.Zero; // ReBarWindow32 - Win10/11 任务栏容器
+        private IntPtr _taskbarButtonHwnd = IntPtr.Zero; // MSTaskSwWClass - 任务栏应用区域
         private bool _isEnabled = false;
         private bool _disposed = false;
 
@@ -30,6 +31,7 @@ namespace App1.Services
         private const string TASKBAR_BUTTON_CLASS = "TrayButtonClass"; // Windows 11 任务栏按钮
         private const string REBAR_WINDOW_CLASS = "ReBarWindow32";
         private const string MSTASKSW_CLASS = "MSTaskSwWClass";
+        private const string MSTASKLIST_CLASS = "MSTaskListWClass";
 
         /// <summary>
         /// 获取或设置任务栏透明效果是否启用
@@ -107,11 +109,16 @@ namespace App1.Services
                     string className = GetClassName(hwnd);
                     System.Diagnostics.Debug.WriteLine($"[任务栏透明] 子窗口: {hwnd} - {className}");
 
-                    // Windows 11 的任务栏按钮
-                    if (className == TASKBAR_BUTTON_CLASS || className == MSTASKSW_CLASS)
+                    // 保存所有关键窗口句柄
+                    if (className == REBAR_WINDOW_CLASS)
+                    {
+                        _rebarWindowHwnd = hwnd;
+                        System.Diagnostics.Debug.WriteLine($"[任务栏透明] 找到ReBarWindow32: {hwnd}");
+                    }
+                    else if (className == MSTASKSW_CLASS)
                     {
                         _taskbarButtonHwnd = hwnd;
-                        System.Diagnostics.Debug.WriteLine($"[任务栏透明] 找到任务栏按钮区域: {hwnd}");
+                        System.Diagnostics.Debug.WriteLine($"[任务栏透明] 找到MSTaskSwWClass: {hwnd}");
                     }
 
                     return true;
@@ -181,35 +188,49 @@ namespace App1.Services
 
             if (_isEnabled)
             {
-                // 使用完全透明的渐变效果，ABGR格式
-                // 0x20000000 = Alpha=32 (约12.5%透明度)，黑色背景
-                // 0x30000000 = Alpha=48 (约19%透明度)
-                uint color = 0x30000000;
+                // 完全透明: ABGR格式，Alpha=0
+                // 0x00000000 = 完全透明
+                uint color = 0x00000000;
 
-                // 应用到主任务栏
-                SetAccentPolicy(_taskbarHwnd, ACCENT_ENABLE_BLURBEHIND, 2, color);
-
-                // 应用到副任务栏
-                if (_secondTaskbarHwnd != IntPtr.Zero)
+                // TranslucentTB 方法：应用到多个窗口
+                // 1. ReBarWindow32 - Win10/Win11 任务栏容器（关键！）
+                if (_rebarWindowHwnd != IntPtr.Zero)
                 {
-                    SetAccentPolicy(_secondTaskbarHwnd, ACCENT_ENABLE_BLURBEHIND, 2, color);
+                    SetAccentPolicy(_rebarWindowHwnd, ACCENT_ENABLE_BLURBEHIND, 2, color);
+                    System.Diagnostics.Debug.WriteLine($"[任务栏透明] 已应用到 ReBarWindow32: {_rebarWindowHwnd}");
                 }
 
-                // Windows 11 还需要应用到任务栏按钮区域
+                // 2. MSTaskSwWClass - 任务栏应用区域
                 if (_taskbarButtonHwnd != IntPtr.Zero)
                 {
                     SetAccentPolicy(_taskbarButtonHwnd, ACCENT_ENABLE_BLURBEHIND, 2, color);
+                    System.Diagnostics.Debug.WriteLine($"[任务栏透明] 已应用到 MSTaskSwWClass: {_taskbarButtonHwnd}");
+                }
+
+                // 3. Shell_TrayWnd - 主任务栏窗口
+                SetAccentPolicy(_taskbarHwnd, ACCENT_ENABLE_BLURBEHIND, 2, color);
+
+                // 4. 副任务栏
+                if (_secondTaskbarHwnd != IntPtr.Zero)
+                {
+                    SetAccentPolicy(_secondTaskbarHwnd, ACCENT_ENABLE_BLURBEHIND, 2, color);
                 }
 
                 System.Diagnostics.Debug.WriteLine($"[任务栏透明] 已应用透明效果: 0x{color:X8}");
             }
             else
             {
+                // 恢复默认
                 SetAccentPolicy(_taskbarHwnd, ACCENT_NORMAL, 0, 0);
 
                 if (_secondTaskbarHwnd != IntPtr.Zero)
                 {
                     SetAccentPolicy(_secondTaskbarHwnd, ACCENT_NORMAL, 0, 0);
+                }
+
+                if (_rebarWindowHwnd != IntPtr.Zero)
+                {
+                    SetAccentPolicy(_rebarWindowHwnd, ACCENT_NORMAL, 0, 0);
                 }
 
                 if (_taskbarButtonHwnd != IntPtr.Zero)
