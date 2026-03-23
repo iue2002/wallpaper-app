@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace App1.Services
 {
@@ -11,6 +12,7 @@ namespace App1.Services
     {
         private IntPtr _taskbarHwnd = IntPtr.Zero;
         private IntPtr _secondTaskbarHwnd = IntPtr.Zero; // Windows 11 可能有第二个任务栏
+        private IntPtr _taskbarButtonHwnd = IntPtr.Zero; // 任务栏按钮区域（Windows 11）
         private bool _isEnabled = false;
         private bool _disposed = false;
 
@@ -25,6 +27,9 @@ namespace App1.Services
         // 任务栏类名
         private const string TASKBAR_CLASS_NAME = "Shell_TrayWnd";
         private const string SECOND_TASKBAR_CLASS_NAME = "Shell_SecondaryTrayWnd";
+        private const string TASKBAR_BUTTON_CLASS = "TrayButtonClass"; // Windows 11 任务栏按钮
+        private const string REBAR_WINDOW_CLASS = "ReBarWindow32";
+        private const string MSTASKSW_CLASS = "MSTaskSwWClass";
 
         /// <summary>
         /// 获取或设置任务栏透明效果是否启用
@@ -56,14 +61,23 @@ namespace App1.Services
                 {
                     System.Diagnostics.Debug.WriteLine("[任务栏透明] 未找到主任务栏窗口");
                 }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine($"[任务栏透明] 找到主任务栏窗口: {_taskbarHwnd}");
+
+                    // 查找任务栏子窗口（MSTaskSwWClass 是任务栏应用区域）
+                    FindChildWindows(_taskbarHwnd);
+                }
 
                 // 查找副任务栏（Windows 11 多屏可能使用）
                 EnumWindows((hwnd, lParam) =>
                 {
-                    if (GetClassName(hwnd) == SECOND_TASKBAR_CLASS_NAME)
+                    string className = GetClassName(hwnd);
+                    if (className == SECOND_TASKBAR_CLASS_NAME)
                     {
                         _secondTaskbarHwnd = hwnd;
                         System.Diagnostics.Debug.WriteLine($"[任务栏透明] 找到副任务栏: {hwnd}");
+                        FindChildWindows(hwnd);
                     }
                     return true;
                 }, IntPtr.Zero);
@@ -78,6 +92,34 @@ namespace App1.Services
             {
                 System.Diagnostics.Debug.WriteLine($"[任务栏透明] 启用失败: {ex.Message}");
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// 查找任务栏的子窗口（Windows 11 需要）
+        /// </summary>
+        private void FindChildWindows(IntPtr parentHwnd)
+        {
+            try
+            {
+                EnumChildWindows(parentHwnd, (hwnd, lParam) =>
+                {
+                    string className = GetClassName(hwnd);
+                    System.Diagnostics.Debug.WriteLine($"[任务栏透明] 子窗口: {hwnd} - {className}");
+
+                    // Windows 11 的任务栏按钮
+                    if (className == TASKBAR_BUTTON_CLASS || className == MSTASKSW_CLASS)
+                    {
+                        _taskbarButtonHwnd = hwnd;
+                        System.Diagnostics.Debug.WriteLine($"[任务栏透明] 找到任务栏按钮区域: {hwnd}");
+                    }
+
+                    return true;
+                }, IntPtr.Zero);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[任务栏透明] 查找子窗口失败: {ex.Message}");
             }
         }
 
@@ -140,17 +182,23 @@ namespace App1.Services
             if (_isEnabled)
             {
                 // 使用完全透明的渐变效果，ABGR格式
-                // 0x59000000 = Alpha=89 (约35%透明度)，黑色背景
-                // 0x80000000 = Alpha=128 (约50%透明度)
-                uint color = 0x80000000;
+                // 0x20000000 = Alpha=32 (约12.5%透明度)，黑色背景
+                // 0x30000000 = Alpha=48 (约19%透明度)
+                uint color = 0x30000000;
 
                 // 应用到主任务栏
-                SetAccentPolicy(_taskbarHwnd, ACCENT_ENABLE_TRANSPARENTGRADIENT, 2, color);
+                SetAccentPolicy(_taskbarHwnd, ACCENT_ENABLE_BLURBEHIND, 2, color);
 
                 // 应用到副任务栏
                 if (_secondTaskbarHwnd != IntPtr.Zero)
                 {
-                    SetAccentPolicy(_secondTaskbarHwnd, ACCENT_ENABLE_TRANSPARENTGRADIENT, 2, color);
+                    SetAccentPolicy(_secondTaskbarHwnd, ACCENT_ENABLE_BLURBEHIND, 2, color);
+                }
+
+                // Windows 11 还需要应用到任务栏按钮区域
+                if (_taskbarButtonHwnd != IntPtr.Zero)
+                {
+                    SetAccentPolicy(_taskbarButtonHwnd, ACCENT_ENABLE_BLURBEHIND, 2, color);
                 }
 
                 System.Diagnostics.Debug.WriteLine($"[任务栏透明] 已应用透明效果: 0x{color:X8}");
@@ -162,6 +210,11 @@ namespace App1.Services
                 if (_secondTaskbarHwnd != IntPtr.Zero)
                 {
                     SetAccentPolicy(_secondTaskbarHwnd, ACCENT_NORMAL, 0, 0);
+                }
+
+                if (_taskbarButtonHwnd != IntPtr.Zero)
+                {
+                    SetAccentPolicy(_taskbarButtonHwnd, ACCENT_NORMAL, 0, 0);
                 }
 
                 SendMessage(_taskbarHwnd, WM_DWMCOMPOSITIONCHANGED, IntPtr.Zero, IntPtr.Zero);
@@ -215,11 +268,14 @@ namespace App1.Services
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern IntPtr FindWindow(string lpClassName, string? lpWindowName);
 
-        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        private static extern string GetClassName(IntPtr hWnd);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
+        private static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
 
         [DllImport("user32.dll")]
         private static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
         private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
@@ -227,6 +283,17 @@ namespace App1.Services
         private static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
         private const uint WM_DWMCOMPOSITIONCHANGED = 0x031E;
+
+        /// <summary>
+        /// 获取窗口类名
+        /// </summary>
+        private static string GetClassName(IntPtr hWnd)
+        {
+            const int nMaxCount = 256;
+            StringBuilder className = new StringBuilder(nMaxCount);
+            GetClassName(hWnd, className, nMaxCount);
+            return className.ToString();
+        }
 
         // 核心 API: SetWindowCompositionAttribute (user32.dll 未公开API)
         [DllImport("user32.dll")]
