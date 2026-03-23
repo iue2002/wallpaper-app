@@ -469,9 +469,10 @@
                             Spacing="30">
                     
                     <!-- Logo 图片 (1240x600，保持2:1比例) -->
-                    <Image Source="Assets/SplashScreen.scale-200.png"
-                           Width="600"
-                           Height="300"
+                          <Image x:Name="SplashLogoImage"
+                              Source="Assets/SplashScreen.png"
+                                  Width="280"
+                                  Height="140"
                            Stretch="Uniform"/>
                     
                     <!-- 应用名称 -->
@@ -515,6 +516,7 @@
             <Button x:Name="btnToggleViewMode"
                     Content="&#xE8A9;"
                     FontFamily="Segoe MDL2 Assets"
+                    AutomationProperties.Name="切换视图模式"
                     FontSize="20"
                     Width="56"
                     Height="56"

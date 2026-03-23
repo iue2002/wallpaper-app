@@ -130,6 +130,43 @@ namespace App1.Services.Cache
                 EnsureDirectoriesExist();
             });
         }
+
+        /// <summary>
+        /// 清理指定时间点之前（含该时间点）的缓存文件
+        /// </summary>
+        public Task CleanupCacheOlderThanAsync(DateTime cutoffTime)
+        {
+            return Task.Run(() =>
+            {
+                CleanupFolderOlderThan(_imagesFolder, cutoffTime);
+                CleanupFolderOlderThan(_thumbnailsFolder, cutoffTime);
+            });
+        }
+
+        private static void CleanupFolderOlderThan(string folderPath, DateTime cutoffTime)
+        {
+            if (!Directory.Exists(folderPath))
+            {
+                return;
+            }
+
+            var files = Directory.GetFiles(folderPath);
+            foreach (var file in files)
+            {
+                try
+                {
+                    var info = new FileInfo(file);
+                    if (info.CreationTime <= cutoffTime)
+                    {
+                        info.Delete();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[缓存清理] 跳过文件失败: {file} | {ex.Message}");
+                }
+            }
+        }
         
         /// <summary>
         /// 清理指定图片缓存

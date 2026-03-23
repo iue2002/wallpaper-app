@@ -106,10 +106,18 @@ namespace App1.Services.Api
 
                         var urls = item.GetProperty("urls");
                         var thumbUrl = urls.GetProperty("small").GetString();  // 缩略图
-                        var fullUrl = urls.GetProperty("regular").GetString(); // 高质量图
+                        var wallpaperUrl = urls.GetProperty("full").GetString(); // 壁纸图（高质量）
+                        var originalUrl = urls.TryGetProperty("raw", out var rawProp) && rawProp.ValueKind != JsonValueKind.Null
+                            ? rawProp.GetString()
+                            : wallpaperUrl;
 
                         var width = item.GetProperty("width").GetInt32();
                         var height = item.GetProperty("height").GetInt32();
+
+                        if (string.IsNullOrEmpty(thumbUrl) || string.IsNullOrEmpty(wallpaperUrl))
+                        {
+                            continue;
+                        }
 
                         // 只保留横向图片
                         if (width < height)
@@ -118,11 +126,19 @@ namespace App1.Services.Api
                             continue;
                         }
 
+                        // 统一2K过滤：至少满足2560x1440中的一个维度
+                        if (width < 2560 && height < 1440)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[Unsplash API] 跳过低分辨率图片: {width}x{height}");
+                            continue;
+                        }
+
                         var wallpaper = new Wallpaper
                         {
                             Title = description ?? "Unsplash Photo",
+                            OriginalUrl = originalUrl ?? wallpaperUrl,
                             ThumbUrl = thumbUrl,
-                            FullUrl = fullUrl,
+                            FullUrl = wallpaperUrl,
                             Source = WallpaperSource.Unsplash,
                             Copyright = "Unsplash",
                             AddedDate = DateTime.Now

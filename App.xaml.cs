@@ -57,6 +57,33 @@ namespace App1
 
             m_window = new MainWindow(startHidden);
             m_window.Activate();
+
+            AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
+        }
+
+        private void OnProcessExit(object? sender, EventArgs e)
+        {
+            PersistSettingsBeforeExit();
+        }
+
+        private void PersistSettingsBeforeExit()
+        {
+            try
+            {
+                if (m_window != null)
+                {
+                    var method = m_window.GetType().GetMethod(
+                        "PersistSettingsForSystemExit",
+                        System.Reflection.BindingFlags.Instance |
+                        System.Reflection.BindingFlags.Public |
+                        System.Reflection.BindingFlags.NonPublic);
+                    method?.Invoke(m_window, null);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[退出] 兜底保存失败: {ex.Message}");
+            }
         }
 
         /// <summary>

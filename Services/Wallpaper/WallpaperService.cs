@@ -404,6 +404,44 @@ namespace App1.Services.WallpaperSetter
                 System.Diagnostics.Debug.WriteLine($"[壁纸设置] 清理失败: {ex.Message}");
             }
         }
+
+        /// <summary>
+        /// 清理指定时间点之前（含该时间点）的壁纸文件
+        /// </summary>
+        public void CleanupWallpapersOlderThan(DateTime cutoffTime)
+        {
+            try
+            {
+                var jpgFiles = Directory.GetFiles(_wallpaperFolder, "*.jpg");
+                var bmpFiles = Directory.GetFiles(_wallpaperFolder, "*.bmp");
+
+                var allFiles = jpgFiles.Concat(bmpFiles).ToArray();
+                var deletedCount = 0;
+
+                foreach (var file in allFiles)
+                {
+                    try
+                    {
+                        var info = new FileInfo(file);
+                        if (info.CreationTime <= cutoffTime)
+                        {
+                            info.Delete();
+                            deletedCount++;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[壁纸设置] 跳过删除失败文件: {file} | {ex.Message}");
+                    }
+                }
+
+                System.Diagnostics.Debug.WriteLine($"[壁纸设置] 按日期清理完成，删除 {deletedCount} 个文件（阈值: {cutoffTime:yyyy-MM-dd HH:mm:ss}）");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[壁纸设置] 按日期清理失败: {ex.Message}");
+            }
+        }
         
         /// <summary>
         /// 设置锁屏界面壁纸
@@ -422,28 +460,77 @@ namespace App1.Services.WallpaperSetter
                     return false;
                 }
                 
-                // 2. 设置锁屏界面
-                var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(localPath);
-                await Windows.System.UserProfile.LockScreen.SetImageFileAsync(file);
+                // 2. 验证文件存在
+                if (!File.Exists(localPath))
+                {
+                    System.Diagnostics.Debug.WriteLine($"[锁屏设置] 图片文件不存在: {localPath}");
+                    return false;
+                }
                 
-                System.Diagnostics.Debug.WriteLine($"[锁屏设置] ✅ 锁屏界面设置成功");
-                return true;
+                // 3. 确保使用绝对路径
+                var absolutePath = Path.GetFullPath(localPath);
+                System.Diagnostics.Debug.WriteLine($"[锁屏设置] 图片绝对路径: {absolutePath}");
+                
+                // 4. 尝试设置锁屏界面（兼容Windows 11 26200+版本）
+                try
+                {
+                    var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(absolutePath);
+                    await Windows.System.UserProfile.LockScreen.SetImageFileAsync(file);
+                    
+                    System.Diagnostics.Debug.WriteLine($"[锁屏设置] ✅ 锁屏界面设置成功");
+                    return true;
+                }
+                catch (System.Runtime.InteropServices.COMException ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[锁屏设置] ❌ COM异常: {ex.Message}");
+                    System.Diagnostics.Debug.WriteLine($"[锁屏设置] 错误代码: 0x{ex.HResult:X8}");
+                    
+                    // 尝试备用方法：使用注册表设置
+                    return SetLockScreenUsingRegistry(absolutePath);
+                }
             }
             catch (UnauthorizedAccessException ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[锁屏设置] ❌ 权限不足: {ex.Message}");
                 return false;
             }
-            catch (System.Runtime.InteropServices.COMException ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[锁屏设置] ❌ COM异常: {ex.Message}");
-                System.Diagnostics.Debug.WriteLine($"[锁屏设置] 错误代码: 0x{ex.HResult:X8}");
-                return false;
-            }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[锁屏设置] ❌ 设置失败: {ex.Message}");
                 System.Diagnostics.Debug.WriteLine($"[锁屏设置] 异常类型: {ex.GetType().Name}");
+                return false;
+            }
+        }
+        
+        /// <summary>
+        /// 使用注册表设置锁屏壁纸（备用方法）
+        /// </summary>
+        private bool SetLockScreenUsingRegistry(string imagePath)
+        {
+            try
+            {
+                System.Diagnostics.Debug.WriteLine($"[锁屏设置] 尝试使用注册表设置...");
+                
+                // 设置锁屏壁纸注册表项
+                using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Control Panel\Desktop", true))
+                {
+                    if (key != null)
+                    {
+                        key.SetValue("LockScreenImage", imagePath);
+                        key.Flush();
+                        System.Diagnostics.Debug.WriteLine($"[锁屏设置] ✅ 注册表更新成功");
+                    }
+                }
+                
+                // 刷新系统设置
+                RefreshExplorer();
+                
+                System.Diagnostics.Debug.WriteLine($"[锁屏设置] ✅ 备用方法设置成功");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[锁屏设置] ❌ 备用方法失败: {ex.Message}");
                 return false;
             }
         }

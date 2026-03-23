@@ -82,7 +82,14 @@ namespace App1.Services.Api
                         var width = item.GetProperty("width").GetInt32();
                         var height = item.GetProperty("height").GetInt32();
                         
-                        // 智能过滤：横向图片全部保留，竖向图片只保留4K以上
+                        // 统一2K过滤：至少满足2560x1440中的一个维度
+                        if (width < 2560 && height < 1440)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[Pexels API] 跳过低分辨率图片: {width}x{height}");
+                            continue;
+                        }
+
+                        // 竖屏图片额外要求4K级别，避免竖屏模糊
                         if (width <= height)
                         {
                             // 竖屏图片：检查是否为4K以上高分辨率（宽度>=2160 或 高度>=3840）
@@ -176,7 +183,14 @@ namespace App1.Services.Api
                         var width = item.GetProperty("width").GetInt32();
                         var height = item.GetProperty("height").GetInt32();
                         
-                        // 智能过滤：横向图片全部保留，竖向图片只保留4K以上
+                        // 统一2K过滤：至少满足2560x1440中的一个维度
+                        if (width < 2560 && height < 1440)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[Pexels 搜索] 跳过低分辨率图片: {width}x{height}");
+                            continue;
+                        }
+
+                        // 竖屏图片额外要求4K级别，避免竖屏模糊
                         if (width <= height)
                         {
                             // 竖屏图片：检查是否为4K以上高分辨率（宽度>=2160 或 高度>=3840）
