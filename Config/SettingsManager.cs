@@ -92,5 +92,8 @@ namespace App1.Config
         
         // 开机自启设置
         public bool IsStartupEnabled { get; set; } = false;
+        
+        // 任务栏透明设置
+        public bool IsTaskbarBlurEnabled { get; set; } = false;
     }
 }

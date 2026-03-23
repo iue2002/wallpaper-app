@@ -36,6 +36,7 @@ namespace App1
         private readonly CacheService _cacheService;
         private readonly WallpaperService _wallpaperService;
         private TrayManager? _trayManager; // 托盘管理器
+        private TaskbarBlurService? _taskbarBlurService; // 任务栏透明服务
         
         private readonly ObservableCollection<Wallpaper> _wallpapers = new();
         private bool _isLoadingMore = false;
@@ -167,6 +168,9 @@ namespace App1
                 // 在UI线程执行安全关闭
                 this.DispatcherQueue.TryEnqueue(() => Shutdown());
             });
+
+            // 初始化任务栏透明服务
+            _taskbarBlurService = new TaskbarBlurService();
 
             // 开机自启后台启动：初始化后直接隐藏窗口，仅保留托盘
             if (_startHiddenOnLaunch)
@@ -338,6 +342,13 @@ namespace App1
 
                 System.Diagnostics.Debug.WriteLine("[主窗口] 允许关闭，开始释放资源...");
 
+                // 恢复任务栏默认外观
+                if (_taskbarBlurService != null)
+                {
+                    _taskbarBlurService.Dispose();
+                    _taskbarBlurService = null;
+                }
+
                 // 停止所有定时器并释放资源（防止进程残留）
                 StopAllTimers();
                 _trayManager?.Dispose();
@@ -366,6 +377,13 @@ namespace App1
 
                 // 停止并清理所有定时器
                 StopAllTimers();
+
+                // 恢复任务栏默认外观
+                if (_taskbarBlurService != null)
+                {
+                    _taskbarBlurService.Dispose();
+                    _taskbarBlurService = null;
+                }
 
                 // 释放资源
                 try { _pexelsApi?.Dispose(); } catch { }
@@ -533,7 +551,14 @@ namespace App1
                     EnableStartup();
                 }
                 _appSettings.IsStartupEnabled = IsStartupEnabled();
-                
+
+                // 恢复任务栏透明状态
+                if (_appSettings.IsTaskbarBlurEnabled && _taskbarBlurService != null)
+                {
+                    _taskbarBlurService.Enable();
+                    System.Diagnostics.Debug.WriteLine("[设置] 任务栏透明效果已恢复");
+                }
+
                 System.Diagnostics.Debug.WriteLine("[设置] 应用设置已恢复");
                 
                 // 更新定时状态指示器
@@ -2234,6 +2259,65 @@ namespace App1
         }
 
         /// <summary>
+        /// 右键菜单 - 切换任务栏透明
+        /// </summary>
+        private void ToggleTaskbarBlur_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (_taskbarBlurService == null)
+                {
+                    ShowToast("任务栏透明服务未初始化", isSuccess: false);
+                    return;
+                }
+
+                bool isCurrentlyEnabled = _taskbarBlurService.IsEnabled;
+                bool newState = !isCurrentlyEnabled;
+
+                if (newState)
+                {
+                    if (_taskbarBlurService.Enable())
+                    {
+                        ShowToast("已启用任务栏透明", isSuccess: true);
+                        System.Diagnostics.Debug.WriteLine("[任务栏透明] 已启用");
+                    }
+                    else
+                    {
+                        ShowToast("启用任务栏透明失败", isSuccess: false);
+                        System.Diagnostics.Debug.WriteLine("[任务栏透明] 启用失败");
+                        return;
+                    }
+                }
+                else
+                {
+                    if (_taskbarBlurService.Disable())
+                    {
+                        ShowToast("已关闭任务栏透明", isSuccess: true);
+                        System.Diagnostics.Debug.WriteLine("[任务栏透明] 已关闭");
+                    }
+                    else
+                    {
+                        ShowToast("关闭任务栏透明失败", isSuccess: false);
+                        System.Diagnostics.Debug.WriteLine("[任务栏透明] 关闭失败");
+                        return;
+                    }
+                }
+
+                // 更新设置
+                _appSettings.IsTaskbarBlurEnabled = newState;
+                SaveAppSettings();
+
+                // 更新菜单项状态
+                UpdateTaskbarBlurMenuItemStatus();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[任务栏透明] 切换失败: {ex.Message}");
+                ShowToast("任务栏透明设置失败", isSuccess: false);
+            }
+        }
+
+        /// <summary>
         /// 启用开机启动
         /// </summary>
         private void EnableStartup()
@@ -2350,7 +2434,10 @@ namespace App1
                 {
                     // 更新开机自启菜单项状态
                     UpdateStartupMenuItemStatus(menuFlyout);
-                    
+
+                    // 更新任务栏透明菜单项状态
+                    UpdateTaskbarBlurMenuItemStatus(menuFlyout);
+
                     // 更新定时切换菜单项状态
                     UpdateTimerMenuItemStatus(menuFlyout);
                 }
@@ -2467,6 +2554,39 @@ namespace App1
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[UI] 更新定时子菜单项失败: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 更新任务栏透明菜单项状态（无参数重载）
+        /// </summary>
+        private void UpdateTaskbarBlurMenuItemStatus()
+        {
+            // 此方法用于在设置更改后被调用，但此时菜单可能未打开
+            System.Diagnostics.Debug.WriteLine("[UI] 调用无参数的UpdateTaskbarBlurMenuItemStatus");
+        }
+
+        /// <summary>
+        /// 更新任务栏透明菜单项状态
+        /// </summary>
+        private void UpdateTaskbarBlurMenuItemStatus(MenuFlyout menuFlyout)
+        {
+            try
+            {
+                bool isEnabled = _taskbarBlurService != null && _taskbarBlurService.IsEnabled;
+
+                // 遍历菜单项找到任务栏透明菜单项
+                foreach (var item in menuFlyout.Items)
+                {
+                    if (item is MenuFlyoutItem menuItem && menuItem.Text.Contains("任务栏透明"))
+                    {
+                        menuItem.Text = isEnabled ? "任务栏透明 ✓" : "任务栏透明";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[UI] 更新任务栏透明菜单项失败: {ex.Message}");
             }
         }
 
