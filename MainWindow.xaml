@@ -253,6 +253,12 @@
                                                 </MenuFlyoutItem.Icon>
                                             </MenuFlyoutItem>
                                             <MenuFlyoutSeparator />
+                                            <MenuFlyoutItem x:Name="GridTaskbarBlurMenuItem" Text="任务栏透明" Click="ToggleTaskbarBlur_Click">
+                                                <MenuFlyoutItem.Icon>
+                                                    <FontIcon Glyph="&#xF13A;" />
+                                                </MenuFlyoutItem.Icon>
+                                            </MenuFlyoutItem>
+                                            <MenuFlyoutSeparator />
                                             <MenuFlyoutItem Text="下载此图片" Click="DownloadImage_Click">
                                                 <MenuFlyoutItem.Icon>
                                                     <FontIcon Glyph="&#xE896;" />
@@ -390,6 +396,12 @@
                                         <MenuFlyoutItem x:Name="StartupMenuItem" Text="开机启动" Click="ToggleStartup_Click">
                                             <MenuFlyoutItem.Icon>
                                                 <FontIcon Glyph="&#xE7B7;" />
+                                            </MenuFlyoutItem.Icon>
+                                        </MenuFlyoutItem>
+                                        <MenuFlyoutSeparator />
+                                        <MenuFlyoutItem x:Name="TaskbarBlurMenuItem" Text="任务栏透明" Click="ToggleTaskbarBlur_Click">
+                                            <MenuFlyoutItem.Icon>
+                                                <FontIcon Glyph="&#xF13A;" />
                                             </MenuFlyoutItem.Icon>
                                         </MenuFlyoutItem>
                                         <MenuFlyoutSeparator />
