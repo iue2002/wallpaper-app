@@ -43,7 +43,8 @@ namespace App1.Services.Api
             
             _httpClient = new HttpClient(handler)
             {
-                Timeout = TimeSpan.FromSeconds(30)
+                // 单个源最多等 8 秒，避免一个慢源把整页加载拖到 30 秒
+                Timeout = TimeSpan.FromSeconds(8)
             };
         }
         
@@ -58,45 +59,24 @@ namespace App1.Services.Api
             {
                 System.Diagnostics.Debug.WriteLine($"[BingAPI] 开始获取Bing随机历史壁纸（UHD超高清）...");
                 
-                // 使用随机历史壁纸API，每次获取都不同
-                for (int i = 0; i < count; i++)
+                // 官方接口每段最多 8 天，取两段覆盖约 15 天（第三方 bing.img.run 已不可用，30 秒超时×N 是卡顿主因）
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var idx in new[] { 0, 7 })
                 {
-                    try
+                    var batch = await GetWallpapersByMarketAsync("zh-CN", 8, idx);
+                    foreach (var item in batch)
                     {
-                        // 获取随机壁纸API（会重定向到Bing真实URL）
-                        var randApiUrl = "https://bing.img.run/rand_uhd.php";
-                        
-                        // 获取302重定向后的真实URL
-                        var response = await _httpClient.GetAsync(randApiUrl);
-                        if (response.IsSuccessStatusCode)
+                        if (seen.Add(item.FullUrl))
                         {
-                            var redirectUrl = response.RequestMessage?.RequestUri?.ToString() ?? randApiUrl;
-                            
-                            // 重要：重定向后的URL可能是1920x1080，需要替换为UHD
-                            // 原始URL: https://cn.bing.com/th?id=OHR.xxx_1920x1080.jpg
-                            // UHD URL: https://cn.bing.com/th?id=OHR.xxx_UHD.jpg
-                            var fullUrl = redirectUrl.Replace("_1920x1080.jpg", "_UHD.jpg");
-                            var thumbUrl = redirectUrl; // 缩略图使用1920x1080
-                            
-                            wallpapers.Add(new Wallpaper
-                            {
-                                Id = Guid.NewGuid().ToString(),
-                                Title = $"Bing历史壁纸 #{i + 1}",
-                                Copyright = "来源: Bing随机历史壁纸",
-                                Source = WallpaperSource.Bing,
-                                OriginalUrl = fullUrl,
-                                FullUrl = fullUrl,
-                                ThumbUrl = thumbUrl,
-                                AddedDate = DateTime.Now
-                            });
-                            
-                            System.Diagnostics.Debug.WriteLine($"[BingAPI] 获取第 {i + 1} 张 UHD: {fullUrl}");
+                            wallpapers.Add(item);
                         }
                     }
-                    catch (Exception ex)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[BingAPI] 获取第 {i + 1} 张失败: {ex.Message}");
-                    }
+                }
+
+                if (wallpapers.Count > count)
+                {
+                    wallpapers = wallpapers.OrderBy(_ => Random.Shared.Next()).Take(count).ToList();
                 }
                 
                 System.Diagnostics.Debug.WriteLine($"[BingAPI] ✅ 共获取 {wallpapers.Count} 张UHD超高清壁纸");
@@ -112,12 +92,12 @@ namespace App1.Services.Api
         /// <summary>
         /// 获取指定地区的Bing壁纸
         /// </summary>
-        private async Task<List<Wallpaper>> GetWallpapersByMarketAsync(string market, int n = 8)
+        private async Task<List<Wallpaper>> GetWallpapersByMarketAsync(string market, int n = 8, int idx = 0)
         {
             try
             {
-                // Bing壁纸API
-                var url = $"https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n={n}&mkt={market}";
+                // Bing壁纸API（走 cn.bing.com，国内可达性更稳）
+                var url = $"https://cn.bing.com/HPImageArchive.aspx?format=js&idx={idx}&n={n}&mkt={market}";
                 var response = await _httpClient.GetStringAsync(url);
                 
                 var json = JsonDocument.Parse(response);
@@ -136,8 +116,8 @@ namespace App1.Services.Api
                         if (string.IsNullOrEmpty(urlBase)) continue;
                         
                         // 构建超高清图片URL（UHD = 4K）
-                        var fullUrl = $"https://www.bing.com{urlBase}_UHD.jpg";
-                        var thumbUrl = $"https://www.bing.com{urlBase}_1920x1080.jpg";
+                        var fullUrl = $"https://cn.bing.com{urlBase}_UHD.jpg";
+                        var thumbUrl = $"https://cn.bing.com{urlBase}_1920x1080.jpg";
                         
                         wallpapers.Add(new Wallpaper
                         {

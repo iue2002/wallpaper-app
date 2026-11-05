@@ -741,6 +741,13 @@ namespace App1
                         newWallpapersForDb.Add(wallpaper);
                         totalLoaded++;
                         ShowEmpty(false);
+
+                        // 首屏够 8 张就收起转圈，不再等最慢的源（Bing/Seovx 等可能超时或直接失败）
+                        if (totalLoaded >= 8)
+                        {
+                            ShowLoadingMore(false);
+                        }
+
                         System.Diagnostics.Debug.WriteLine($"[{sourceTag}] ✓ 已显示: {wallpaper.Title}");
                     }
                 }
@@ -751,7 +758,7 @@ namespace App1
                 System.Diagnostics.Debug.WriteLine("[Pexels壁纸] 请求 15 张（过滤后取8张横向）...");
                 try
                 {
-                    var pexelsWallpapers = await _pexelsApi.GetCuratedWallpapersAsync(perPage: 15);
+                    var pexelsWallpapers = await _pexelsApi.GetCuratedWallpapersAsync(perPage: 80);
                     var selectedWallpapers = pexelsWallpapers.ToList();
                     if (selectedWallpapers.Count > 0)
                     {
@@ -1403,7 +1410,7 @@ namespace App1
                 // 首轮优先顺序：Pexels -> Bing -> 360
                 try
                 {
-                    var pexelsWallpapers = await _pexelsApi.GetCuratedWallpapersAsync(perPage: 5);
+                    var pexelsWallpapers = await _pexelsApi.GetCuratedWallpapersAsync(perPage: 30);
                     if (pexelsWallpapers.Count > 0)
                     {
                         AddImmersiveWallpaper(pexelsWallpapers.First(), "Pexels");
@@ -2769,7 +2776,7 @@ namespace App1
                     case 0:
                         // 从Pexels获取随机图片
                         System.Diagnostics.Debug.WriteLine("[定时器] 从Pexels API获取随机壁纸");
-                        wallpapers = await _pexelsApi.GetCuratedWallpapersAsync(5);
+                        wallpapers = await _pexelsApi.GetCuratedWallpapersAsync(30);
                         break;
                     case 1:
                         // 从Bing获取随机图片
