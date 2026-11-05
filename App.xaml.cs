@@ -30,6 +30,7 @@ namespace App1
         private AutoWallpaperService? _autoWallpaper;
         private bool _exiting;
         private bool _closeTipShown;
+        private bool _uiResourcesReady;
 
         public App()
         {
@@ -115,8 +116,7 @@ namespace App1
         private void StartBackgroundServices(bool backgroundLaunch)
         {
             _autoWallpaper = new AutoWallpaperService();
-            _autoWallpaper.Changed += (desktop, title) =>
-                AppLog.Write($"[自动换壁纸] 已应用 | {(desktop ? "桌面" : "锁屏")} | {title}");
+            _autoWallpaper.Changed += OnWallpaperChanged;
 
             // 开机自启时 45 秒后先换一张 —— 用户开机就想看到桌面变了，
             // 而不是等满一个定时周期。手动启动则维持"等一个周期"的原行为。
@@ -134,6 +134,39 @@ namespace App1
                 AppLog.Write($"[开机启动] {(enabled ? "已开启" : "已关闭")}");
 
             _tray.Initialize();
+        }
+
+        /// <summary>
+        /// 换完一张之后收拾一次。
+        ///
+        /// 一次换壁纸要经过：接口 JSON → 下载几 MB 图片 → 写盘 → 交给系统设桌面。
+        /// 这条链上会留下下载缓冲、托管字节数组和 native 位图，全是垃圾。
+        /// 主窗口开着的时候不在这里收（强制 GC 会让界面顿一下），
+        /// 关着的时候顺手收掉，任务管理器里的数字就不会被这一次换壁纸顶上去。
+        /// </summary>
+        private void OnWallpaperChanged(bool desktop, string title)
+        {
+            AppLog.Write($"[自动换壁纸] 已应用 | {(desktop ? "桌面" : "锁屏")} | {title}");
+
+            if (_mainWindow == null)
+            {
+                _ = TrimAfterChangeAsync();
+            }
+        }
+
+        private static async Task TrimAfterChangeAsync()
+        {
+            // 等 WallpaperService 那边的 STA 线程收尾、COM 对象引用都断干净
+            await Task.Delay(2000).ConfigureAwait(false);
+
+            try
+            {
+                await Task.Run(() => MemoryTrimmer.Compact("换壁纸后")).ConfigureAwait(false);
+            }
+            catch
+            {
+                // 回收失败不影响功能
+            }
         }
 
         /// <summary>
@@ -173,6 +206,37 @@ namespace App1
         }
 
         /// <summary>
+        /// 补上控件默认样式字典。
+        ///
+        /// XamlControlsResources 是整套控件的默认 Style，native 对象，解析一次要占好几 MB。
+        /// 后台常驻只需要托盘图标和定时器，一个控件都没有，所以它不该在进程启动时就加载。
+        /// 这里第一次真正要开窗口之前才合并进去 —— 必须是 XAML 运行时已经起来的时机，
+        /// 放在 App 构造函数里会抛 COMException（WinUI 的既有约束）。
+        /// </summary>
+        private void EnsureUiResources()
+        {
+            if (_uiResourcesReady)
+            {
+                return;
+            }
+
+            try
+            {
+                // 插到 0 号位：App.xaml 里自己定义的颜色/字号优先级更高
+                Resources.MergedDictionaries.Insert(
+                    0, new Microsoft.UI.Xaml.Controls.XamlControlsResources());
+
+                _uiResourcesReady = true;
+                AppLog.Write("[资源] 已合并 XamlControlsResources");
+            }
+            catch (Exception ex)
+            {
+                // 失败就保持未加载状态，下次开窗口再试一次
+                AppLog.Write($"[资源] 合并 XamlControlsResources 失败: {ex}");
+            }
+        }
+
+        /// <summary>
         /// 打开主界面。已经开着就还原并前置，没开就新建。
         /// </summary>
         public void ShowMainWindow()
@@ -200,6 +264,8 @@ namespace App1
 
             try
             {
+                EnsureUiResources();
+
                 var window = new MainWindow();
                 window.Closed += OnMainWindowClosed;
                 _mainWindow = window;
