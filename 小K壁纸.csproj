@@ -108,13 +108,8 @@
       <Link>ExplorerTap.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <!-- XAML 诊断的中介 DLL。Win11 26200 的 System32 里没有它，而
-         InitializeXamlDiagnosticsEx 必须拿到它的路径，否则返回 0x80070490。
-         来自 Windows SDK（Windows Kits\10\bin\x64\XamlDiagnostics）。 -->
-    <None Include="native\dist\xamldiagnostics.dll" Condition="Exists('native\dist\xamldiagnostics.dll')">
-      <Link>xamldiagnostics.dll</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
+    <!-- xamldiagnostics.dll 已停用：显式传它的路径仍 0x80070490，且注入后
+         explorer 崩溃重启过（14393 与 26100 不兼容），不要再分发。 -->
   </ItemGroup>
 
   <ItemGroup>

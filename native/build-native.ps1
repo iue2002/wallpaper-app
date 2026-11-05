@@ -37,25 +37,13 @@ if (-not (Test-Path $dll)) {
 
 Write-Host "已生成：$dll"
 
-# XAML 诊断的中介 DLL。
+# XAML 诊断的中介 DLL —— 已停用，不要再自动分发。
 #
-# InitializeXamlDiagnosticsEx 的第三个参数是 XamlDiagnostics.dll 的路径；传 nullptr
-# 时系统会去 C:\Windows 下找，而 Win11 26200 的 System32 里没有这个文件，于是直接
-# 返回 0x80070490(ERROR_NOT_FOUND)，注入永远起不来。这个 DLL 由 Windows SDK 分发，
-# 自 Win10 起版本就没变过（10.0.14393），依赖只有 msvcrt/CoreMessaging/OLEAUT32。
-$kitsBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
-$xamlDiagnostics = $null
-foreach ($arch in @('x64', 'x86', 'arm64')) {
-    $candidate = Join-Path $kitsBin "$arch\XamlDiagnostics\xamldiagnostics.dll"
-    if (Test-Path $candidate) {
-        $xamlDiagnostics = $candidate
-        break
-    }
-}
-
-if ($xamlDiagnostics) {
-    Copy-Item $xamlDiagnostics (Join-Path $root 'dist\xamldiagnostics.dll') -Force
-    Write-Host "已复制：$xamlDiagnostics"
-} else {
-    Write-Warning '没找到 xamldiagnostics.dll（Windows SDK 的 XamlDiagnostics 目录），任务栏透明会因 0x80070490 失败'
-}
+# 曾按 b9c8750 的思路把 SDK 里的 xamldiagnostics.dll（10.0.14393，2016 年版）随程序
+# 分发并显式传给 InitializeXamlDiagnosticsEx。实测结果（Win11 26200）：
+# 1. 传完整路径仍然 60 次全 0x80070490，问题不在"系统找不到这个文件"；
+# 2. 注入后 explorer 崩溃重启过一次 —— 这份老 DLL 与 26100 的 XAML 不兼容，
+#    带进 explorer 有实际风险。
+# 结论：XAML 诊断在这类系统上根本起不来（TranslucentTB 在 Win11 24H2+ 上
+# 大量用户报同样的 0x80070490，是系统层问题）。保持停用，恢复前先想清楚。
+# dist\xamldiagnostics.disabled.dll 留作证据，改名回 xamldiagnostics.dll 即恢复旧行为。
