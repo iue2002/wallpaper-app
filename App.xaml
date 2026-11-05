@@ -7,7 +7,10 @@
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
-                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+                <!-- XamlControlsResources 装着全部控件的默认样式，是 native 对象，体积不小。
+                     原来写在这里，进程一起来就跟着 App.xaml 解析；而后台常驻（托盘 + 自动换壁纸）
+                     根本不需要任何控件样式。改成在第一次开窗口之前由代码合并，
+                     见 App.EnsureUiResources()。这里是空占位，保持结构不变。 -->
                 <!-- Other merged dictionaries here -->
             </ResourceDictionary.MergedDictionaries>
             

@@ -18,11 +18,33 @@ namespace App1.Services.Diagnostics
     /// </summary>
     internal static class MemoryTrimmer
     {
+        // 关窗口、换壁纸后都可能触发，撞在一起时只让一个跑：
+        // 两个阻塞式全量 GC 并行没有任何收益，只会把线程池占住。
+        private static int _running;
+
         /// <summary>
         /// 回收一次。blocking 的强制 GC + 工作集修剪。
         /// </summary>
         /// <param name="reason">只用于日志，方便对照是哪一步之后降下来的。</param>
         public static void Compact(string reason)
+        {
+            if (System.Threading.Interlocked.Exchange(ref _running, 1) == 1)
+            {
+                AppLog.Write($"[内存] 已有回收在进行，跳过({reason})");
+                return;
+            }
+
+            try
+            {
+                CompactCore(reason);
+            }
+            finally
+            {
+                System.Threading.Interlocked.Exchange(ref _running, 0);
+            }
+        }
+
+        private static void CompactCore(string reason)
         {
             var before = GC.GetTotalMemory(forceFullCollection: false);
 
