@@ -185,10 +185,6 @@
                         <GridView.ItemTemplate>
                             <DataTemplate>
                                 <Grid Width="280" Height="200" 
-                                      Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                                      CornerRadius="8"
-                                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                      BorderThickness="1"
                                       Margin="10"
                                       Tapped="WallpaperGridItem_Tapped"
                                       DoubleTapped="WallpaperItem_DoubleTapped"
@@ -272,29 +268,16 @@
                                         </MenuFlyout>
                                     </Grid.ContextFlyout>
                                     
-                                    <!-- 缩略图 -->
-                                    <Image Stretch="UniformToFill" 
-                                           Loaded="GridImage_Loaded"
-                                           ImageOpened="GridImage_Opened"/>
-                                    
-                                    <!-- 底部信息栏 -->
-                                    <Grid VerticalAlignment="Bottom" 
-                                          Background="{ThemeResource AcrylicBackgroundFillColorDefaultBrush}"
-                                          Padding="12,8">
-                                        <StackPanel>
-                                            <TextBlock Text="{Binding Title}" 
-                                                       FontSize="14" 
-                                                       FontWeight="SemiBold"
-                                                       TextTrimming="CharacterEllipsis"
-                                                       MaxLines="1"/>
-                                            <TextBlock Text="{Binding Copyright}" 
-                                                       FontSize="11" 
-                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                       TextTrimming="CharacterEllipsis"
-                                                       MaxLines="1"
-                                                       Margin="0,2,0,0"/>
-                                        </StackPanel>
-                                    </Grid>
+                                    <!-- 纯图片卡片：圆角裁切交给 Border，图片铺满，不再叠标题和来源 -->
+                                    <Border x:Name="CardBorder"
+                                            CornerRadius="14"
+                                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                            BorderThickness="1">
+                                        <Image Stretch="UniformToFill" 
+                                               Loaded="GridImage_Loaded"
+                                               ImageOpened="GridImage_Opened"/>
+                                    </Border>
                                 </Grid>
                             </DataTemplate>
                         </GridView.ItemTemplate>
