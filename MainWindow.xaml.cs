@@ -13,6 +13,7 @@ using App1.Services.Api;
 using App1.Services.Cache;
 using App1.Services.Data;
 using App1.Services.Network;
+using App1.Services.Taskbar;
 using App1.Services.WallpaperSetter;
 using App1.Config;
 using App1.Helpers;
@@ -39,7 +40,6 @@ namespace App1
         private WallpaperRepository? _repository;
         private readonly CacheService _cacheService;
         private readonly WallpaperService _wallpaperService;
-        private TaskbarBlurServiceV2? _taskbarBlurService; // 任务栏透明服务
 
         /// <summary>
         /// 换壁纸串行闸门。连点卡片、双击加右键同时触发时，
@@ -197,8 +197,7 @@ namespace App1
             // 加载应用设置
             LoadAppSettings();
 
-            // 初始化任务栏透明服务
-            _taskbarBlurService = new TaskbarBlurServiceV2();
+            // 任务栏外观由 App 层负责（关窗口后仍然生效），这里只读它的状态
 
             // 托盘图标由 App 层的 TrayHost 负责 —— 它是个独立的隐藏窗口，
             // 主窗口关掉之后仍然活着。这里不再自己挂托盘。
@@ -349,18 +348,13 @@ namespace App1
 
             try
             {
-                // 先存设置。必须放在释放资源之前 —— 后面会把 _taskbarBlurService 置空，
-                // 再存的话"任务栏透明已开启"会被写成 false，下次开窗口就丢了。
+                // 先存设置。必须放在释放资源之前，否则"任务栏外观"会被写成关闭。
                 SaveAppSettings();
 
                 System.Diagnostics.Debug.WriteLine("[主窗口] 关闭，释放窗口级资源");
 
-                // 恢复任务栏默认外观
-                if (_taskbarBlurService != null)
-                {
-                    _taskbarBlurService.Dispose();
-                    _taskbarBlurService = null;
-                }
+                // 任务栏外观不在这里还原：它归 App 层管，关窗口后要继续生效，
+                // 只有退出进程时才由 TaskbarAppearanceService.Dispose 还原。
 
                 // 先把数据源摘掉。ItemsSource 还指着集合的话，GridView / FlipView
                 // 会一直持有容器，容器里的 Image 又持有位图，整棵树跟着窗口对象一起留着。
@@ -586,13 +580,7 @@ namespace App1
                 // 写一次注册表，用户手动关掉之后，下次开窗口又会被塞回去。
                 _appSettings.IsStartupEnabled = IsStartupEnabled();
 
-                // 恢复任务栏透明状态
-                if (_appSettings.IsTaskbarBlurEnabled && _taskbarBlurService != null)
-                {
-                    _taskbarBlurService.Enable();
-                    System.Diagnostics.Debug.WriteLine("[设置] 任务栏透明效果已恢复");
-                }
-
+                // 任务栏外观在 App 层启动时已经应用过了，这里不再重复挂
                 System.Diagnostics.Debug.WriteLine("[设置] 应用设置已恢复");
 
                 // 把从磁盘读到的定时状态推给后台调度。
@@ -629,7 +617,9 @@ namespace App1
                 _appSettings.IsStartupEnabled = IsStartupEnabled();
                 _appSettings.IsDesktopTimerEnabled = _isDesktopTimerEnabled;
                 _appSettings.IsLockScreenTimerEnabled = _isLockScreenTimerEnabled;
-                _appSettings.IsTaskbarBlurEnabled = _taskbarBlurService != null && _taskbarBlurService.IsEnabled;
+
+                // TaskbarEffect 在用户切档位时就已经写进 _appSettings 并保存过，
+                // 这里不再从服务反读，免得两个来源打架。
 
                 // 间隔时间在 StartWallpaperTimer 里已经写进 _appSettings，
                 // 定时器本身挪到后台了，这里不再从 UI 对象上反读
@@ -2347,61 +2337,68 @@ namespace App1
         }
 
         /// <summary>
-        /// 右键菜单 - 切换任务栏透明
+        /// 右键菜单 - 任务栏外观档位（关闭 / 透明 / 亚克力）。
+        /// 服务在 App 层，关掉窗口之后仍然生效。
         /// </summary>
-        private void ToggleTaskbarBlur_Click(object sender, RoutedEventArgs e)
+        private async void SetTaskbarEffect_Click(object sender, RoutedEventArgs e)
         {
             try
             {
-                if (_taskbarBlurService == null)
+                if (sender is not FrameworkElement element || element.Tag is not string tag)
                 {
-                    ShowToast("任务栏透明服务未初始化", isSuccess: false);
                     return;
                 }
 
-                bool isCurrentlyEnabled = _taskbarBlurService.IsEnabled;
-                bool newState = !isCurrentlyEnabled;
-
-                if (newState)
+                if (!int.TryParse(tag, out var mode))
                 {
-                    if (_taskbarBlurService.Enable())
-                    {
-                        ShowToast("已启用任务栏透明", isSuccess: true);
-                        System.Diagnostics.Debug.WriteLine("[任务栏透明] 已启用");
-                    }
-                    else
-                    {
-                        ShowToast("启用任务栏透明失败", isSuccess: false);
-                        System.Diagnostics.Debug.WriteLine("[任务栏透明] 启用失败");
-                        return;
-                    }
+                    return;
+                }
+
+                var effect = (TaskbarEffect)mode;
+                var service = (Application.Current as App)?.TaskbarAppearance;
+                if (service == null)
+                {
+                    ShowToast("任务栏服务未初始化", isSuccess: false);
+                    return;
+                }
+
+                // 注入最长会等十几秒，扔到线程池上，别把界面卡住
+                var ok = await Task.Run(() => service.Apply(effect));
+
+                _appSettings.TaskbarEffect = mode;
+                _appSettings.IsTaskbarBlurEnabled = effect != TaskbarEffect.Off;
+                SettingsManager.SaveSettings(_appSettings);
+
+                if (effect == TaskbarEffect.Off)
+                {
+                    ShowToast(ok ? "已恢复任务栏默认外观" : (service.LastError ?? "恢复失败"), ok);
+                    return;
+                }
+
+                if (!ok)
+                {
+                    ShowToast(service.LastError ?? "任务栏透明设置失败", isSuccess: false);
+                    return;
+                }
+
+                // 注入成功不等于画上了：还要看 DLL 有没有在 explorer 里找到任务栏背景。
+                // 给它几百毫秒登记完再回读。
+                await Task.Delay(900);
+
+                var applied = service.AppliedCount;
+                if (applied > 0)
+                {
+                    ShowToast(effect == TaskbarEffect.Clear ? "已开启任务栏透明" : "已开启任务栏亚克力", isSuccess: true);
                 }
                 else
                 {
-                    if (_taskbarBlurService.Disable())
-                    {
-                        ShowToast("已关闭任务栏透明", isSuccess: true);
-                        System.Diagnostics.Debug.WriteLine("[任务栏透明] 已关闭");
-                    }
-                    else
-                    {
-                        ShowToast("关闭任务栏透明失败", isSuccess: false);
-                        System.Diagnostics.Debug.WriteLine("[任务栏透明] 关闭失败");
-                        return;
-                    }
+                    ShowToast("已注入资源管理器，但没找到任务栏背景（详见 tap.log）", isSuccess: false);
                 }
-
-                // 直接保存设置，避免触发SaveAppSettings中的其他提示
-                _appSettings.IsTaskbarBlurEnabled = newState;
-                SettingsManager.SaveSettings(_appSettings);
-
-                // 更新菜单项状态
-                UpdateTaskbarBlurMenuItemStatus();
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[任务栏透明] 切换失败: {ex.Message}");
-                ShowToast("任务栏透明设置失败", isSuccess: false);
+                System.Diagnostics.Debug.WriteLine($"[任务栏] 切换失败: {ex.Message}");
+                ShowToast("任务栏外观设置失败", isSuccess: false);
             }
         }
 
@@ -2598,35 +2595,40 @@ namespace App1
         }
 
         /// <summary>
-        /// 更新任务栏透明菜单项状态（无参数重载）
-        /// </summary>
-        private void UpdateTaskbarBlurMenuItemStatus()
-        {
-            // 此方法用于在设置更改后被调用，但此时菜单可能未打开
-            System.Diagnostics.Debug.WriteLine("[UI] 调用无参数的UpdateTaskbarBlurMenuItemStatus");
-        }
-
-        /// <summary>
-        /// 更新任务栏透明菜单项状态
+        /// 更新任务栏外观菜单项的勾选状态。
+        /// 三个档位是 RadioMenuFlyoutItem，同一个 GroupName 里只会有一个被选中。
         /// </summary>
         private void UpdateTaskbarBlurMenuItemStatus(MenuFlyout menuFlyout)
         {
             try
             {
-                bool isEnabled = _taskbarBlurService != null && _taskbarBlurService.IsEnabled;
+                var current = ((Application.Current as App)?.TaskbarAppearance?.Current
+                               ?? TaskbarEffect.Off).ToString();
 
-                // 遍历菜单项找到任务栏透明菜单项
-                foreach (var item in menuFlyout.Items)
-                {
-                    if (item is MenuFlyoutItem menuItem && menuItem.Text.Contains("任务栏透明"))
-                    {
-                        menuItem.Text = isEnabled ? "任务栏透明 ✓" : "任务栏透明";
-                    }
-                }
+                SyncTaskbarRadioItems(menuFlyout.Items, current);
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[UI] 更新任务栏透明菜单项失败: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[UI] 更新任务栏外观菜单项失败: {ex.Message}");
+            }
+        }
+
+        private static void SyncTaskbarRadioItems(IList<MenuFlyoutItemBase> items, string current)
+        {
+            foreach (var item in items)
+            {
+                if (item is Microsoft.UI.Xaml.Controls.MenuFlyoutSubItem subItem)
+                {
+                    SyncTaskbarRadioItems(subItem.Items, current);
+                    continue;
+                }
+
+                if (item is RadioMenuFlyoutItem radio &&
+                    radio.Tag is string tag &&
+                    radio.GroupName == "TaskbarEffect")
+                {
+                    radio.IsChecked = string.Equals(tag, current, StringComparison.Ordinal);
+                }
             }
         }
 

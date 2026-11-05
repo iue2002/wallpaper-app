@@ -63,6 +63,12 @@ namespace App1.Config
                     
                     if (settings != null)
                     {
+                        // 老版本只有一个"任务栏透明"开关，读过老配置就迁成"透明"档
+                        if (settings.TaskbarEffect == 0 && settings.IsTaskbarBlurEnabled)
+                        {
+                            settings.TaskbarEffect = 1;
+                        }
+
                         System.Diagnostics.Debug.WriteLine("[设置] 配置已加载");
                         return settings;
                     }
@@ -94,6 +100,10 @@ namespace App1.Config
         public bool IsStartupEnabled { get; set; } = false;
         
         // 任务栏透明设置
+        // IsTaskbarBlurEnabled 是旧字段，只用于把老的"开/关"迁移到 TaskbarEffect
         public bool IsTaskbarBlurEnabled { get; set; } = false;
+
+        // 0=关闭 1=透明 2=亚克力，对应 App1.Services.Taskbar.TaskbarEffect
+        public int TaskbarEffect { get; set; } = 0;
     }
 }
