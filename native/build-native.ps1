@@ -36,3 +36,26 @@ if (-not (Test-Path $dll)) {
 }
 
 Write-Host "已生成：$dll"
+
+# XAML 诊断的中介 DLL。
+#
+# InitializeXamlDiagnosticsEx 的第三个参数是 XamlDiagnostics.dll 的路径；传 nullptr
+# 时系统会去 C:\Windows 下找，而 Win11 26200 的 System32 里没有这个文件，于是直接
+# 返回 0x80070490(ERROR_NOT_FOUND)，注入永远起不来。这个 DLL 由 Windows SDK 分发，
+# 自 Win10 起版本就没变过（10.0.14393），依赖只有 msvcrt/CoreMessaging/OLEAUT32。
+$kitsBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+$xamlDiagnostics = $null
+foreach ($arch in @('x64', 'x86', 'arm64')) {
+    $candidate = Join-Path $kitsBin "$arch\XamlDiagnostics\xamldiagnostics.dll"
+    if (Test-Path $candidate) {
+        $xamlDiagnostics = $candidate
+        break
+    }
+}
+
+if ($xamlDiagnostics) {
+    Copy-Item $xamlDiagnostics (Join-Path $root 'dist\xamldiagnostics.dll') -Force
+    Write-Host "已复制：$xamlDiagnostics"
+} else {
+    Write-Warning '没找到 xamldiagnostics.dll（Windows SDK 的 XamlDiagnostics 目录），任务栏透明会因 0x80070490 失败'
+}
