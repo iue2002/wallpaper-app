@@ -54,6 +54,12 @@ namespace App1
 
         /// <summary>当前全屏预览的是哪一张，用于判断高清图回来时还该不该换上去</summary>
         private Wallpaper? _fullScreenWallpaper;
+
+        /// <summary>
+        /// 预览层版本号。关闭动画有延迟，期间用户可能已经点开了另一张，
+        /// 靠它判断"这次关闭还算不算数"。
+        /// </summary>
+        private int _previewVersion;
         
         private readonly ObservableCollection<Wallpaper> _wallpapers = new();
         private bool _isLoadingMore = false;
@@ -1751,6 +1757,14 @@ namespace App1
             {
                 try
                 {
+                    // WinUI 的 Border 只把背景和边框画成圆角，里面的图片四角照样露在外面，
+                    // 所以卡片看起来是"圆角旁边顶出四个尖角"。这里在合成层做一次几何裁剪。
+                    if (image.Tag is not "cardClip")
+                    {
+                        image.Tag = "cardClip";
+                        ApplyCardRoundedClip(image, 12f);
+                    }
+
                     var imageUrl = wallpaper.ThumbUrl;  // 多图模式使用缩略图
                     
                     // Win11: 直接加载 HTTPS URL（按卡片尺寸解码，不按原图）
@@ -1789,9 +1803,49 @@ namespace App1
         /// </summary>
         private void GridImage_Opened(object sender, RoutedEventArgs e)
         {
-            // 可以在这里添加淡入动画等效果
-            if (sender is Microsoft.UI.Xaml.Controls.Image image)
-            System.Diagnostics.Debug.WriteLine("[多图模式] ✅ 图片显示成功");
+            if (sender is Microsoft.UI.Xaml.Controls.Image)
+            {
+                System.Diagnostics.Debug.WriteLine("[多图模式] ✅ 图片显示成功");
+            }
+        }
+
+        /// <summary>
+        /// 给卡片图片加圆角裁切。Border 的 CornerRadius 只管背景和边框，
+        /// 不裁子元素，图片放进去四角是直角顶出来的。用合成层的圆角几何裁剪，
+        /// 边缘走 GPU 抗锯齿，比单纯靠 Border 干净得多。
+        /// </summary>
+        private static void ApplyCardRoundedClip(FrameworkElement element, float radius)
+        {
+            try
+            {
+                var visual = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(element);
+                var compositor = visual.Compositor;
+
+                void Update(float width, float height)
+                {
+                    if (width <= 0 || height <= 0)
+                    {
+                        return;
+                    }
+
+                    var geometry = compositor.CreateRoundedRectangleGeometry();
+                    geometry.Size = new System.Numerics.Vector2(width, height);
+                    geometry.CornerRadius = new System.Numerics.Vector2(radius, radius);
+                    visual.Clip = compositor.CreateGeometricClip(geometry);
+                }
+
+                if (element.ActualWidth > 0 && element.ActualHeight > 0)
+                {
+                    Update((float)element.ActualWidth, (float)element.ActualHeight);
+                }
+
+                element.SizeChanged += (_, args) =>
+                    Update((float)args.NewSize.Width, (float)args.NewSize.Height);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[多图模式] 圆角裁切失败: {ex.Message}");
+            }
         }
         
         /// <summary>
@@ -2569,19 +2623,61 @@ namespace App1
         /// </summary>
         private void FullScreenImageViewer_Tapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
         {
+            HideFullScreenImage();
+        }
+
+        /// <summary>
+        /// 关闭全屏预览。先淡出，再真正收起并把图片引用断开 ——
+        /// 一张 4K 预览图解码后是几十 MB，光隐藏控件不会释放。
+        /// </summary>
+        private void HideFullScreenImage()
+        {
             try
             {
-                FullScreenImageViewer.Visibility = Visibility.Collapsed;
+                if (FullScreenImageViewer.Visibility != Visibility.Visible)
+                {
+                    return;
+                }
 
-                // 主动断开引用。一张 4K 预览图解码后是几十 MB，
-                // 光靠控件隐藏不会释放，连着看十几张内存就上去了。
-                FullScreenImage.Source = null;
+                // 先断引用，后台正在下载的高清回来后就换不上去了
                 _fullScreenWallpaper = null;
+                var closingVersion = _previewVersion;
+
+                var visual = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview
+                    .GetElementVisual(FullScreenImageViewer);
+                var compositor = visual.Compositor;
+
+                var fade = compositor.CreateScalarKeyFrameAnimation();
+                fade.InsertKeyFrame(0f, 1f);
+                fade.InsertKeyFrame(1f, 0f);
+                fade.Duration = TimeSpan.FromMilliseconds(140);
+                visual.StartAnimation("Opacity", fade);
+
+                _ = CollapseAfterFadeAsync(closingVersion);
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[UI] 全屏查看器点击事件失败: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[UI] 关闭全屏预览失败: {ex.Message}");
+                FullScreenImageViewer.Visibility = Visibility.Collapsed;
             }
+        }
+
+        private async Task CollapseAfterFadeAsync(int closingVersion)
+        {
+            await Task.Delay(150);
+
+            // 这中间用户又点开了另一张，不能把新的预览收掉
+            if (closingVersion != _previewVersion)
+            {
+                return;
+            }
+
+            FullScreenImageViewer.Visibility = Visibility.Collapsed;
+            FullScreenImageLow.Source = null;
+            FullScreenImageHigh.Source = null;
+
+            Microsoft.UI.Xaml.Hosting.ElementCompositionPreview
+                .GetElementVisual(FullScreenImageHigh).Opacity = 0f;
         }
 
         /// <summary>
@@ -2786,24 +2882,37 @@ namespace App1
         }
 
         /// <summary>
-        /// 单击卡片 → 全屏查看。先用已缓存的缩略图立刻铺满，再后台换成高清，
-        /// 这样点下去马上有画面，不用对着空白等几秒。
+        /// 单击卡片 → 全屏查看。
+        /// 缩略图先把画面铺住，高清在后台下载完再淡入盖上去 —— 点下去立刻有画面，
+        /// 又不会出现从糊到清晰的硬切。
         /// </summary>
         private void ShowFullScreenImage(Wallpaper wallpaper)
         {
             try
             {
                 _fullScreenWallpaper = wallpaper;
+                _previewVersion++;
 
                 FullScreenTitle.Text = wallpaper.Title;
                 FullScreenCopyright.Text = wallpaper.Copyright;
-                FullScreenImage.Source = null;
+
+                FullScreenImageLow.Source = null;
+                FullScreenImageHigh.Source = null;
+                Microsoft.UI.Xaml.Hosting.ElementCompositionPreview
+                    .GetElementVisual(FullScreenImageHigh).Opacity = 0f;
+
                 FullScreenImageViewer.Visibility = Visibility.Visible;
+
+                // 刚设为可见时还没走布局，ActualWidth 是 0，拿它算缩放原点会变成左上角。
+                // 这里强制跑一次布局，代价只有一个 Grid。
+                FullScreenImageViewer.UpdateLayout();
 
                 if (!string.IsNullOrEmpty(wallpaper.ThumbUrl))
                 {
-                    FullScreenImage.Source = CreateBitmap(wallpaper.ThumbUrl, 0);
+                    FullScreenImageLow.Source = CreateBitmap(wallpaper.ThumbUrl, 0);
                 }
+
+                PlayOpenAnimation();
 
                 var hiResUrl = !string.IsNullOrEmpty(wallpaper.FullUrl) ? wallpaper.FullUrl : wallpaper.ThumbUrl;
 
@@ -2820,39 +2929,118 @@ namespace App1
         }
 
         /// <summary>
-        /// 后台把预览图换成高清版。解码限制在 2048 宽 —— 再高屏幕也显示不出来，
-        /// 但内存占用会翻好几倍（4K 原图直接解是 33 MB 一张）。
+        /// 打开动画：整层淡入，图片从 0.86 回到原尺寸。
+        /// 全部走合成线程，展开过程中 UI 线程还能继续干活，不会掉帧。
+        /// </summary>
+        private void PlayOpenAnimation()
+        {
+            var viewer = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview
+                .GetElementVisual(FullScreenImageViewer);
+            var compositor = viewer.Compositor;
+
+            var easeOut = compositor.CreateCubicBezierEasingFunction(
+                new System.Numerics.Vector2(0.16f, 1f),
+                new System.Numerics.Vector2(0.3f, 1f));
+
+            var fade = compositor.CreateScalarKeyFrameAnimation();
+            fade.InsertKeyFrame(0f, 0f);
+            fade.InsertKeyFrame(1f, 1f, easeOut);
+            fade.Duration = TimeSpan.FromMilliseconds(180);
+            viewer.StartAnimation("Opacity", fade);
+
+            var host = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview
+                .GetElementVisual(FullScreenImageHost);
+
+            // 以预览层中心为缩放原点，视觉上像是从画面中间撑开
+            host.CenterPoint = new System.Numerics.Vector3(
+                (float)FullScreenImageViewer.ActualWidth / 2f,
+                (float)FullScreenImageViewer.ActualHeight / 2f,
+                0f);
+
+            var scale = compositor.CreateVector3KeyFrameAnimation();
+            scale.InsertKeyFrame(0f, new System.Numerics.Vector3(0.86f, 0.86f, 1f));
+            scale.InsertKeyFrame(1f, System.Numerics.Vector3.One, easeOut);
+            scale.Duration = TimeSpan.FromMilliseconds(260);
+            host.StartAnimation("Scale", scale);
+        }
+
+        /// <summary>
+        /// 后台加载高清版并淡入。
+        ///
+        /// 这里刻意不用 BitmapImage.UriSource 直接指网络地址：那条路走的是系统
+        /// 图片栈（跟着系统代理和 UA 走），不少图床会直接拒掉，结果就是点开之后
+        /// 永远停在缩略图上。改成用应用自己的 HttpClient 直连下载再解码，链路可控，
+        /// 失败也能明确记下来。
         /// </summary>
         private async Task UpgradeFullScreenImageAsync(string url, Wallpaper wallpaper)
         {
+            var version = _previewVersion;
+
+            byte[]? bytes = null;
             try
             {
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(20));
+                bytes = await Services.Network.HttpClientProvider.Images.GetByteArrayAsync(url, cts.Token);
+
+                System.Diagnostics.Debug.WriteLine($"[全屏预览] 高清下载完成: {bytes.Length / 1024} KB / {url}");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[全屏预览] 高清下载失败: {ex.Message} / {url}");
+                return;
+            }
+
+            if (bytes.Length == 0
+                || version != _previewVersion
+                || !ReferenceEquals(_fullScreenWallpaper, wallpaper))
+            {
+                return;
+            }
+
+            try
+            {
+                var stream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
+                using (var writer = new Windows.Storage.Streams.DataWriter(stream))
+                {
+                    writer.WriteBytes(bytes);
+                    await writer.StoreAsync();
+                    await writer.FlushAsync();
+                    writer.DetachStream();
+                }
+                stream.Seek(0);
+
                 var bitmap = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage
                 {
                     DecodePixelType = Microsoft.UI.Xaml.Media.Imaging.DecodePixelType.Physical,
                     DecodePixelWidth = 2048
                 };
 
-                var tcs = new TaskCompletionSource<bool>();
-                bitmap.ImageOpened += (_, _) => tcs.TrySetResult(true);
-                bitmap.ImageFailed += (_, _) => tcs.TrySetResult(false);
+                await bitmap.SetSourceAsync(stream);
 
-                bitmap.UriSource = new Uri(url);
-
-                // 等它真的解码完再换上去，避免先黑一下再出图
-                var opened = await tcs.Task;
-
-                // 这期间用户可能已经关掉、或者点了另一张
-                if (opened
-                    && ReferenceEquals(_fullScreenWallpaper, wallpaper)
-                    && FullScreenImageViewer.Visibility == Visibility.Visible)
+                // 解码期间用户可能已经关掉、或者点了另一张
+                if (version != _previewVersion || !ReferenceEquals(_fullScreenWallpaper, wallpaper))
                 {
-                    FullScreenImage.Source = bitmap;
+                    return;
                 }
+
+                FullScreenImageHigh.Source = bitmap;
+
+                // 从缩略图淡入到高清，避免硬切
+                var highVisual = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview
+                    .GetElementVisual(FullScreenImageHigh);
+                var compositor = highVisual.Compositor;
+
+                var fade = compositor.CreateScalarKeyFrameAnimation();
+                fade.InsertKeyFrame(0f, 0f);
+                fade.InsertKeyFrame(1f, 1f);
+                fade.Duration = TimeSpan.FromMilliseconds(240);
+                highVisual.StartAnimation("Opacity", fade);
+
+                System.Diagnostics.Debug.WriteLine("[全屏预览] ✅ 已切到高清图");
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[UI] 高清预览加载失败: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[全屏预览] 高清解码失败: {ex.Message}");
             }
         }
 
@@ -2878,8 +3066,9 @@ namespace App1
         }
 
         /// <summary>
-        /// 卡片悬停缩放：1.0 → 1.04，150ms 缓出。同时把 z 序提上来，
-        /// 否则放大后的边缘会被右边和下边的卡片压住。
+        /// 卡片悬停缩放。用合成线程的隐式动画：这里只改一次 Scale 值，
+        /// 补间全部由合成器负责，鼠标来回扫也不占 UI 线程，所以是"跟手"而不是"追手"。
+        /// 每张卡片的动画对象只装一次，重复装会反复重建。 
         /// </summary>
         private void AnimateCardScale(object sender, double target, int zIndex)
         {
@@ -2890,35 +3079,35 @@ namespace App1
 
             Canvas.SetZIndex(element, zIndex);
 
-            if (element.RenderTransform is not Microsoft.UI.Xaml.Media.ScaleTransform transform)
+            var visual = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(element);
+
+            if (visual.ImplicitAnimations == null)
             {
-                return;
+                var compositor = visual.Compositor;
+
+                // 缩放原点取卡片中心，否则会从左上角往外涨
+                visual.CenterPoint = new System.Numerics.Vector3(
+                    (float)element.ActualWidth / 2f,
+                    (float)element.ActualHeight / 2f,
+                    0f);
+
+                var expand = compositor.CreateVector3KeyFrameAnimation();
+                expand.Target = "Scale";
+                expand.InsertExpressionKeyFrame(
+                    1f,
+                    "this.FinalValue",
+                    compositor.CreateCubicBezierEasingFunction(
+                        new System.Numerics.Vector2(0.16f, 1f),
+                        new System.Numerics.Vector2(0.3f, 1f)));
+                expand.Duration = TimeSpan.FromMilliseconds(180);
+                expand.StopBehavior = Microsoft.UI.Composition.AnimationStopBehavior.SetToFinalValue;
+
+                var implicitAnimations = compositor.CreateImplicitAnimationCollection();
+                implicitAnimations["Scale"] = expand;
+                visual.ImplicitAnimations = implicitAnimations;
             }
 
-            var storyboard = new Microsoft.UI.Xaml.Media.Animation.Storyboard();
-            var easing = new Microsoft.UI.Xaml.Media.Animation.CubicEase
-            {
-                EasingMode = Microsoft.UI.Xaml.Media.Animation.EasingMode.EaseOut
-            };
-
-            foreach (var property in new[] { "ScaleX", "ScaleY" })
-            {
-                var animation = new Microsoft.UI.Xaml.Media.Animation.DoubleAnimation
-                {
-                    To = target,
-                    Duration = new Duration(TimeSpan.FromMilliseconds(150)),
-                    EasingFunction = easing,
-
-                    // 缩放属于布局相关属性，不开这个开关动画不会跑
-                    EnableDependentAnimation = true
-                };
-
-                Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(animation, transform);
-                Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(animation, property);
-                storyboard.Children.Add(animation);
-            }
-
-            storyboard.Begin();
+            visual.Scale = new System.Numerics.Vector3((float)target, (float)target, 1f);
         }
 
         /// <summary>

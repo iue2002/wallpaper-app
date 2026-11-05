@@ -268,12 +268,10 @@
                                         </MenuFlyout>
                                     </Grid.ContextFlyout>
                                     
-                                    <!-- 纯图片卡片：圆角裁切交给 Border，图片铺满，不再叠标题和来源 -->
+                                    <!-- 纯图片卡片：圆角交给 Border 裁切，图片铺满，不再叠标题和来源 -->
                                     <Border x:Name="CardBorder"
-                                            CornerRadius="14"
-                                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                            BorderThickness="1">
+                                            CornerRadius="12"
+                                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
                                         <Image Stretch="UniformToFill" 
                                                Loaded="GridImage_Loaded"
                                                ImageOpened="GridImage_Opened"/>
@@ -596,13 +594,24 @@
             <Grid x:Name="FullScreenImageViewer"
                   Visibility="Collapsed"
                   Background="#CC000000"
+                  Opacity="0"
                   Canvas.ZIndex="9999"
                   Tapped="FullScreenImageViewer_Tapped">
-                <!-- 全屏图片 -->
-                <Image x:Name="FullScreenImage"
-                       Stretch="Uniform"
-                       HorizontalAlignment="Center"
-                       VerticalAlignment="Center"/>
+                <!-- 双层图片：缩略图先把画面铺住，高清下载完再淡入盖上去，
+                     中间不会出现从糊到清晰的硬切 -->
+                <Grid x:Name="FullScreenImageHost"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Center">
+                    <Image x:Name="FullScreenImageLow"
+                           Stretch="Uniform"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"/>
+                    <Image x:Name="FullScreenImageHigh"
+                           Stretch="Uniform"
+                           Opacity="0"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"/>
+                </Grid>
                 
                 <!-- 关闭提示（右上角） -->
                 <TextBlock Text="点击任意位置关闭"

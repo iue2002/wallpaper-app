@@ -74,7 +74,8 @@ namespace App1.Config
         // ===== 缓存配置 =====
         public const long MaxCacheSizeMB = 500;          // 最大缓存500MB
         public const int MaxCachedImages = 100;          // 最多缓存100张
-        public const int ThumbnailWidth = 400;           // 缩略图宽度400px
+        public const int ThumbnailWidth = 560;           // 缩略图解码宽度：卡片 280 宽，150% DPI 下需要 420，
+                                                         // 留些余量给 200% DPI，同时不至于把流量拉起来
         public const int ThumbnailHeight = 225;          // 缩略图高度225px (16:9)
         
         // ===== 数据库限制配置 =====
