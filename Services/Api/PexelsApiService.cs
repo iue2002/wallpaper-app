@@ -59,7 +59,10 @@ namespace App1.Services.Api
                 System.Diagnostics.Debug.WriteLine($"[Pexels API] 获取精选壁纸（第 {page} 页，每页 {perPage} 张）...");
                 
                 // 不限制方向，获取所有高质量图片（包括8K竖屏）
-                var url = $"{BASE_URL}/curated?page={page}&per_page={perPage}&orientation=landscape";
+                // 注意：/curated 不支持 orientation 参数（只有 /search 支持），
+                // 服务端会把竖图一并返回且竖图占比很高，因此靠较大的 per_page 取材，
+                // 再由 WallpaperQualityRule 本地过滤出横图。
+                var url = $"{BASE_URL}/curated?page={page}&per_page={perPage}";
                 
                 var response = await _httpClient.GetStringAsync(url);
                 var jsonDoc = JsonDocument.Parse(response);
