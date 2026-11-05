@@ -63,6 +63,8 @@ namespace App1
         
         private readonly ObservableCollection<Wallpaper> _wallpapers = new();
         private bool _isLoadingMore = false;
+        // GridView 模板内部的滚动容器，用于检测"滚到底部"触发补页
+        private ScrollViewer? _gridScrollViewer;
         private int _currentPage = 0;
         private const int PAGE_SIZE = 18;  // 每次加载18张（5张Pexels + 10张Bing + 3张360）
         private bool _isImmersiveMode = true;  // 默认沉浸式浏览模式
@@ -919,6 +921,57 @@ namespace App1
         }
         
         /// <summary>
+        /// GridView 的滚动由它自己模板内部的 ScrollViewer 承担，视图上并没有
+        /// ViewChanged 事件可挂，只能等模板应用后从视觉树里把那个 ScrollViewer 取出来。
+        /// </summary>
+        private void WallpaperGridView_Loaded(object sender, RoutedEventArgs e)
+        {
+            if (_gridScrollViewer != null)
+            {
+                return;   // 已经挂过，避免重复订阅
+            }
+
+            WallpaperGridView.ApplyTemplate();
+
+            var inner = FindDescendant<ScrollViewer>(WallpaperGridView);
+            if (inner == null)
+            {
+                System.Diagnostics.Debug.WriteLine("[滚动检测] ⚠️ 未找到 GridView 内部 ScrollViewer，加载更多将只能靠按钮触发");
+                return;
+            }
+
+            _gridScrollViewer = inner;
+            inner.ViewChanged += WallpaperScrollViewer_ViewChanged;
+            System.Diagnostics.Debug.WriteLine("[滚动检测] ✅ 已接管 GridView 内部滚动");
+        }
+
+        /// <summary>
+        /// 在视觉树里深度优先查找第一个 T 类型子元素。
+        /// </summary>
+        private static T? FindDescendant<T>(Microsoft.UI.Xaml.DependencyObject root) where T : class
+        {
+            var count = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(root);
+
+            for (var i = 0; i < count; i++)
+            {
+                var child = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(root, i);
+
+                if (child is T match)
+                {
+                    return match;
+                }
+
+                var deeper = FindDescendant<T>(child);
+                if (deeper != null)
+                {
+                    return deeper;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
         /// 滚动事件：检测是否滚动到底部
         /// </summary>
         private async void WallpaperScrollViewer_ViewChanged(object sender, ScrollViewerViewChangedEventArgs e)
@@ -1277,7 +1330,7 @@ namespace App1
                 // 停止多图模式的加载
                 _isLoadingMore = false;
                 
-                WallpaperScrollViewer.Visibility = Visibility.Collapsed;
+                WallpaperGridView.Visibility = Visibility.Collapsed;
                 ImmersiveFlipView.Visibility = Visibility.Visible;
                 
                 btnToggleViewMode.Content = "\uE8A9";  // 网格图标
@@ -1323,7 +1376,7 @@ namespace App1
                 // 停止沉浸式模式的加载
                 _isLoadingImmersive = false;
                 
-                WallpaperScrollViewer.Visibility = Visibility.Visible;
+                WallpaperGridView.Visibility = Visibility.Visible;
                 ImmersiveFlipView.Visibility = Visibility.Collapsed;
                 
                 btnToggleViewMode.Content = "\uE740";  // 全屏图标
@@ -1593,67 +1646,139 @@ namespace App1
         }
         
         /// <summary>
+        /// 翻页时把离当前页较远的位图放掉。
+        /// 一张 4K 图解码后约 33MB，翻几十页就是几个 GB。虚拟化本身会回收容器，
+        /// 但容器回收时机不是我们能控制的，这里再兜一层：明确把远处的 Source 置空。
+        /// 翻回去时 Loaded 会重新触发加载，图片本来就有磁盘缓存，代价很小。
+        /// </summary>
+        private void ImmersiveFlipView_SelectionChanged(object sender, Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs e)
+        {
+            var current = ImmersiveFlipView.SelectedIndex;
+            if (current < 0)
+            {
+                return;
+            }
+
+            for (var i = 0; i < _immersiveWallpapers.Count; i++)
+            {
+                try
+                {
+                    // 容器已经被虚拟化回收的，本来就不占内存，跳过
+                    if (ImmersiveFlipView.ContainerFromIndex(i) is not Microsoft.UI.Xaml.Controls.FlipViewItem item
+                        || FindDescendant<Microsoft.UI.Xaml.Controls.Image>(item) is not { } image)
+                    {
+                        continue;
+                    }
+
+                    if (Math.Abs(i - current) <= 2)
+                    {
+                        // 前后各两页留着。之前被释放过的要补回来，
+                        // 否则翻回去时容器还在、Loaded 不会再触发，看到的就是一片空白。
+                        if (image.Source == null)
+                        {
+                            _ = LoadImmersiveImageAsync(image);
+                        }
+                    }
+                    else
+                    {
+                        image.Source = null;
+                    }
+                }
+                catch
+                {
+                    // 容器可能正在回收，拿不到就算了
+                }
+            }
+        }
+
+        /// <summary>
+        /// 沉浸式图片的解码目标宽度。
+        /// 全屏看图确实要清晰，但没必要按 4K 原图解码：3840x2160 一张位图就是 33MB，
+        /// 而窗口再大也不可能显示比屏幕更多的像素。按屏幕物理宽度取证，上限 2560
+        /// （2560x1440 约 14MB，只有原图的四成），视觉上看不出差别。
+        /// </summary>
+        private int GetImmersiveDecodeWidth()
+        {
+            try
+            {
+                var scale = ImmersiveFlipView.XamlRoot?.RasterizationScale ?? 1.0;
+                var physicalWidth = ImmersiveFlipView.ActualWidth * scale;
+
+                if (physicalWidth < 1024)
+                {
+                    physicalWidth = 1920;   // 布局还没完成，按 1080p 估一个
+                }
+
+                return (int)Math.Clamp(physicalWidth, 1280, 2560);
+            }
+            catch
+            {
+                return 1920;
+            }
+        }
+
+        /// <summary>
         /// 沉浸式模式 - 图片加载时设置源（优先FullUrl原始分辨率）
         /// Win11: 直接 HTTPS 加载（快速）
         /// Win10: 先下载到本地再加载（兼容）
         /// </summary>
-        private async void ImmersiveImage_Loaded(object sender, RoutedEventArgs e)
+        private void ImmersiveImage_Loaded(object sender, RoutedEventArgs e)
         {
-            if (sender is Microsoft.UI.Xaml.Controls.Image image && image.DataContext is Wallpaper wallpaper)
+            if (sender is Microsoft.UI.Xaml.Controls.Image image)
             {
-                // 优先使用FullUrl（原始高清图），如果为空则使用ThumbUrl（缩略图）
-                var imageUrl = !string.IsNullOrEmpty(wallpaper.FullUrl) ? wallpaper.FullUrl : wallpaper.ThumbUrl;
-                
-                try
+                _ = LoadImmersiveImageAsync(image);
+            }
+        }
+
+        /// <summary>
+        /// 加载当前页的大图。解码宽度按屏幕算，见 GetImmersiveDecodeWidth。
+        /// 独立成方法是因为翻页释放位图之后还要能重新调起来（SelectionChanged 里会用）。
+        /// </summary>
+        private async Task LoadImmersiveImageAsync(Microsoft.UI.Xaml.Controls.Image image)
+        {
+            if (image.DataContext is not Wallpaper wallpaper)
+            {
+                return;
+            }
+
+            // 优先用 FullUrl（原图），为空时退回缩略图
+            var imageUrl = !string.IsNullOrEmpty(wallpaper.FullUrl) ? wallpaper.FullUrl : wallpaper.ThumbUrl;
+            var decodeWidth = GetImmersiveDecodeWidth();
+
+            try
+            {
+                var index = _immersiveWallpapers.IndexOf(wallpaper);
+                System.Diagnostics.Debug.WriteLine($"[沉浸式图片] 开始加载第 {index + 1}/{_immersiveWallpapers.Count} 张: {wallpaper.Title}");
+
+                // Win11: 直接加载 HTTPS URL（快速，无缓存）
+                if (_isWindows11)
                 {
-                    var index = _immersiveWallpapers.IndexOf(wallpaper);
-                    System.Diagnostics.Debug.WriteLine($"[沉浸式图片] 开始加载第 {index + 1}/{_immersiveWallpapers.Count} 张: {wallpaper.Title}");
-                    
-                    // Win11: 直接加载 HTTPS URL（快速，无缓存）
-                    if (_isWindows11)
+                    TryLoadImageFromUrl(image, imageUrl, wallpaper.Title, decodeWidth);
+                }
+                // Win10: 下载到本地再加载（兼容，有缓存）
+                else if (!string.IsNullOrEmpty(wallpaper.LocalPath) && System.IO.File.Exists(wallpaper.LocalPath))
+                {
+                    LoadImageFromLocalPath(image, wallpaper.LocalPath, wallpaper.Title, decodeWidth);
+                }
+                else
+                {
+                    var localPath = await DownloadImageToLocalAsync(imageUrl, wallpaper.Title);
+
+                    if (!string.IsNullOrEmpty(localPath) && System.IO.File.Exists(localPath))
                     {
-                        System.Diagnostics.Debug.WriteLine("[沉浸式图片] Win11 模式 - 直接加载 HTTPS");
-                        TryLoadImageFromUrl(image, imageUrl, wallpaper.Title);
+                        wallpaper.LocalPath = localPath;
+                        LoadImageFromLocalPath(image, localPath, wallpaper.Title, decodeWidth);
                     }
-                    // Win10: 下载到本地再加载（兼容，有缓存）
                     else
                     {
-                        System.Diagnostics.Debug.WriteLine("[沉浸式图片] Win10 模式 - 下载后加载");
-                        
-                        if (!string.IsNullOrEmpty(wallpaper.LocalPath) && System.IO.File.Exists(wallpaper.LocalPath))
-                        {
-                            // 如果已有本地缓存，直接使用
-                            System.Diagnostics.Debug.WriteLine("[沉浸式图片] ✅ 使用本地缓存");
-                            LoadImageFromLocalPath(image, wallpaper.LocalPath, wallpaper.Title);
-                        }
-                        else
-                        {
-                            // 下载图片到本地
-                            System.Diagnostics.Debug.WriteLine("[沉浸式图片] 开始下载图片...");
-                            var localPath = await DownloadImageToLocalAsync(imageUrl, wallpaper.Title);
-                            
-                            if (!string.IsNullOrEmpty(localPath) && System.IO.File.Exists(localPath))
-                            {
-                                wallpaper.LocalPath = localPath;  // 保存本地路径
-                                System.Diagnostics.Debug.WriteLine("[沉浸式图片] ✅ 下载成功");
-                                LoadImageFromLocalPath(image, localPath, wallpaper.Title);
-                            }
-                            else
-                            {
-                                System.Diagnostics.Debug.WriteLine("[沉浸式图片] ❌ 下载失败");
-                            }
-                        }
+                        System.Diagnostics.Debug.WriteLine("[沉浸式图片] ❌ 下载失败");
                     }
                 }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[沉浸式图片] ❌ 加载失败: {wallpaper.Title}");
-                    System.Diagnostics.Debug.WriteLine($"[沉浸式图片] 错误: {ex.Message}");
-                }
             }
-            else
+            catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[沉浸式图片] ⚠️ DataContext为空或类型不匹配");
+                System.Diagnostics.Debug.WriteLine($"[沉浸式图片] ❌ 加载失败: {wallpaper.Title}");
+                System.Diagnostics.Debug.WriteLine($"[沉浸式图片] 错误: {ex.Message}");
             }
         }
         
@@ -1761,50 +1886,132 @@ namespace App1
         /// Win11: 直接 HTTPS 加载
         /// Win10: 先下载到本地再加载
         /// </summary>
-        private async void GridImage_Loaded(object sender, RoutedEventArgs e)
+        /// <summary>
+        /// 卡片图片控件的状态。虚拟化会复用容器，需要记住这张容器当前挂的是哪张图，
+        /// 以及圆角裁剪有没有做过（ApplyCardRoundedClip 会订阅 SizeChanged，重复调用会重复订阅）。
+        /// </summary>
+        private sealed class CardImageState
         {
-            if (sender is Microsoft.UI.Xaml.Controls.Image image && image.DataContext is Wallpaper wallpaper)
+            public bool ClipApplied;
+            public string? LoadedUrl;
+        }
+
+        private void GridImage_Loaded(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Microsoft.UI.Xaml.Controls.Image image)
             {
-                try
+                return;
+            }
+
+            if (image.Tag is not CardImageState state)
+            {
+                state = new CardImageState();
+                image.Tag = state;
+            }
+
+            // 圆角裁剪只跟控件本身有关，元素第一次挂载时做一次就够
+            if (!state.ClipApplied)
+            {
+                state.ClipApplied = true;
+                ApplyCardRoundedClip(image, 12f);
+            }
+
+            _ = LoadCardImageAsync(image);
+        }
+
+        /// <summary>
+        /// GridView 恢复虚拟化后，容器会被回收再复用给别的项。
+        /// 复用那一刻元素并没有离开可视树，Loaded 不会再触发 —— 只靠 Loaded 的话，
+        /// 卡片会一直停在上一张图上。这里跟着 DataContext 变化重新取图。
+        /// </summary>
+        private void GridImage_DataContextChanged(FrameworkElement sender, DataContextChangedEventArgs args)
+        {
+            if (sender is Microsoft.UI.Xaml.Controls.Image image)
+            {
+                _ = LoadCardImageAsync(image);
+            }
+        }
+
+        /// <summary>
+        /// 卡片缩略图的解码宽度。卡片逻辑尺寸是 280x200，按当前屏幕的缩放比例
+        /// 换算成物理像素就够 —— 100% DPI 下 280 足矣，没必要一律按 560 解，
+        /// 那是为 200% DPI 留的余量，在普通屏上等于白解 4 倍像素。
+        /// </summary>
+        private int GetCardDecodeWidth()
+        {
+            try
+            {
+                var scale = WallpaperGridView.XamlRoot?.RasterizationScale ?? 1.0;
+                return (int)Math.Clamp(280 * scale, 280, App1.Config.AppConfig.ThumbnailWidth);
+            }
+            catch
+            {
+                return 400;
+            }
+        }
+
+        /// <summary>
+        /// 按卡片尺寸加载缩略图。Win10 走本地缓存，Win11 直接走 HTTPS。
+        /// </summary>
+        private async Task LoadCardImageAsync(Microsoft.UI.Xaml.Controls.Image image)
+        {
+            if (image.DataContext is not Wallpaper wallpaper)
+            {
+                // 容器被回收、数据已清空：把位图放掉，
+                // 否则这张已经滚出屏幕的卡片还在替它占着解码出来的内存
+                image.Source = null;
+
+                if (image.Tag is CardImageState recycled)
                 {
-                    // WinUI 的 Border 只把背景和边框画成圆角，里面的图片四角照样露在外面，
-                    // 所以卡片看起来是"圆角旁边顶出四个尖角"。这里在合成层做一次几何裁剪。
-                    if (image.Tag is not "cardClip")
+                    recycled.LoadedUrl = null;
+                }
+
+                return;
+            }
+
+            try
+            {
+                var imageUrl = wallpaper.ThumbUrl;  // 多图模式使用缩略图
+                var decodeWidth = GetCardDecodeWidth();
+
+                // Loaded 和 DataContextChanged 常常会连着来一次，同一张图没必要解两遍
+                if (image.Tag is CardImageState state)
+                {
+                    if (state.LoadedUrl == imageUrl && image.Source != null)
                     {
-                        image.Tag = "cardClip";
-                        ApplyCardRoundedClip(image, 12f);
+                        return;
                     }
 
-                    var imageUrl = wallpaper.ThumbUrl;  // 多图模式使用缩略图
-                    
-                    // Win11: 直接加载 HTTPS URL（按卡片尺寸解码，不按原图）
-                    if (_isWindows11)
+                    state.LoadedUrl = imageUrl;
+                }
+
+                // Win11: 直接加载 HTTPS URL（按卡片尺寸解码，不按原图）
+                if (_isWindows11)
+                {
+                    TryLoadImageFromUrl(image, imageUrl, wallpaper.Title, decodeWidth);
+                }
+                // Win10: 下载到本地再加载
+                else
+                {
+                    if (!string.IsNullOrEmpty(wallpaper.LocalPath) && System.IO.File.Exists(wallpaper.LocalPath))
                     {
-                        TryLoadImageFromUrl(image, imageUrl, wallpaper.Title, App1.Config.AppConfig.ThumbnailWidth);
+                        LoadImageFromLocalPath(image, wallpaper.LocalPath, wallpaper.Title, decodeWidth);
                     }
-                    // Win10: 下载到本地再加载
                     else
                     {
-                        if (!string.IsNullOrEmpty(wallpaper.LocalPath) && System.IO.File.Exists(wallpaper.LocalPath))
+                        var localPath = await DownloadImageToLocalAsync(imageUrl, wallpaper.Title);
+
+                        if (!string.IsNullOrEmpty(localPath) && System.IO.File.Exists(localPath))
                         {
-                            LoadImageFromLocalPath(image, wallpaper.LocalPath, wallpaper.Title, App1.Config.AppConfig.ThumbnailWidth);
-                        }
-                        else
-                        {
-                            var localPath = await DownloadImageToLocalAsync(imageUrl, wallpaper.Title);
-                            
-                            if (!string.IsNullOrEmpty(localPath) && System.IO.File.Exists(localPath))
-                            {
-                                wallpaper.LocalPath = localPath;
-                                LoadImageFromLocalPath(image, localPath, wallpaper.Title, App1.Config.AppConfig.ThumbnailWidth);
-                            }
+                            wallpaper.LocalPath = localPath;
+                            LoadImageFromLocalPath(image, localPath, wallpaper.Title, decodeWidth);
                         }
                     }
                 }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[多图模式] 图片加载失败: {wallpaper.Title} | {ex.Message}");
-                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[多图模式] 图片加载失败: {wallpaper.Title} | {ex.Message}");
             }
         }
         
