@@ -18,9 +18,22 @@
     <PublishSingleFile Condition="'$(Configuration)' == 'Release' and '$(PublishSingleFile)' == ''">false</PublishSingleFile>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- TranslucentTB 只是任务栏透明功能的参考源码（WinUI 2 / C++/WinRT）。
+         其 XAML 用了 WinUI 2 的 AcrylicBrush.BackgroundSource，WinUI 3 已移除该成员，
+         让默认 glob 把它卷进来会报 WMC0011。整个目录不参与本项目的编译。 -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);touming\**</DefaultItemExcludes>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
+  <!-- 双保险：显式把参考代码从默认项里摘掉，XAML 编译器也不会再扫描 touming -->
+  <ItemGroup>
+    <Page Remove="touming\**\*.xaml" />
+    <Compile Remove="touming\**\*.cs" />
+    <None Remove="touming\**" />
+    <Content Remove="touming\**" />
+    <EmbeddedResource Remove="touming\**" />
+  </ItemGroup>
+
   <ItemGroup>
     <Content Remove="Assets\LargeTile.scale-200.scale-100.png" />
     <Content Remove="Assets\LargeTile.scale-200.scale-125.png" />
