@@ -65,3 +65,8 @@ $RECYCLE.BIN/
 
 # Local MSIX / Store build output
 artifacts/
+
+# 任务栏注入模块的链接中间产物（只保留 ExplorerTap.dll）
+native/dist/*.exp
+native/dist/*.lib
+native/dist/*.pdb

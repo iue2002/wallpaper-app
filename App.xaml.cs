@@ -7,6 +7,7 @@ using App1.Config;
 using App1.Helpers;
 using App1.Services.Background;
 using App1.Services.Diagnostics;
+using App1.Services.Taskbar;
 
 namespace App1
 {
@@ -28,6 +29,7 @@ namespace App1
         private Window? _mainWindow;
         private TrayHost? _tray;
         private AutoWallpaperService? _autoWallpaper;
+        private TaskbarAppearanceService? _taskbarAppearance;
         private bool _exiting;
         private bool _closeTipShown;
         private bool _uiResourcesReady;
@@ -230,14 +232,32 @@ namespace App1
         /// </summary>
         private void StartBackgroundServices(bool backgroundLaunch)
         {
+            var settings = SettingsManager.LoadSettings();
+
             _autoWallpaper = new AutoWallpaperService();
             _autoWallpaper.Changed += OnWallpaperChanged;
 
             // 开机自启时 45 秒后先换一张 —— 用户开机就想看到桌面变了，
             // 而不是等满一个定时周期。手动启动则维持"等一个周期"的原行为。
             _autoWallpaper.ApplySettings(
-                SettingsManager.LoadSettings(),
+                settings,
                 initialDelaySeconds: backgroundLaunch ? 45 : -1);
+
+            // 任务栏外观属于后台能力：主窗口关掉之后还得留着，所以放在这一层，
+            // 主窗口只负责改档位。
+            _taskbarAppearance = new TaskbarAppearanceService();
+            var taskbarEffect = (TaskbarEffect)settings.TaskbarEffect;
+            if (taskbarEffect != TaskbarEffect.Off)
+            {
+                // 注入要等 explorer 的 XAML 起来，最长十几秒，别堵启动路径
+                _ = Task.Run(() =>
+                {
+                    if (!_taskbarAppearance.Apply(taskbarEffect))
+                    {
+                        AppLog.Write($"[任务栏] 启动时应用失败: {_taskbarAppearance.LastError}");
+                    }
+                });
+            }
 
             _tray = new TrayHost();
             _tray.OpenMainRequested += ShowMainWindow;
@@ -300,6 +320,9 @@ namespace App1
         {
             _tray?.ShowNotification(title, message);
         }
+
+        /// <summary>任务栏外观服务。主窗口改档位时直接调它。</summary>
+        public TaskbarAppearanceService? TaskbarAppearance => _taskbarAppearance;
 
         /// <summary>
         /// 主窗口里的"立即换一张"。和托盘菜单走同一条路径。
@@ -430,6 +453,7 @@ namespace App1
             AppLog.Write("[退出] 开始");
 
             try { PersistSettingsBeforeExit(); } catch { }
+            try { _taskbarAppearance?.Dispose(); } catch { }
             try { _autoWallpaper?.Dispose(); } catch { }
             try { _tray?.Dispose(); } catch { }
             try { _mainWindow?.Close(); } catch { }

@@ -102,6 +102,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- 任务栏透明的注入模块。源码在 native\ExplorerTap，用 native\build-native.ps1 或
+         native\ExplorerTap\ExplorerTap.vcxproj 编出来放到这里；缺文件时程序只是关掉该功能。 -->
+    <None Include="native\dist\ExplorerTap.dll" Condition="Exists('native\dist\ExplorerTap.dll')">
+      <Link>ExplorerTap.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.6584" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.251003001" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.0" />
