@@ -1,231 +1,293 @@
 using Microsoft.UI.Xaml;
 using System;
-using System.Threading;
 using System.Runtime.InteropServices;
-using System.Diagnostics;
-using System.Linq;
-
-// To learn more about WinUI, the WinUI project structure,
-// and more about our project templates, see: http://aka.ms/winui-project-info.
+using System.Threading;
+using System.Threading.Tasks;
+using App1.Config;
+using App1.Helpers;
+using App1.Services.Background;
+using App1.Services.Diagnostics;
 
 namespace App1
 {
     /// <summary>
-    /// Provides application-specific behavior to supplement the default Application class.
+    /// 应用生命周期。
+    ///
+    /// 结构上分成两层：
+    ///   - 常驻层：托盘图标 + 自动换壁纸调度。进程一起来就有，主窗口关掉之后继续活着。
+    ///   - 前端层：MainWindow。只有用户要看图时才创建，关掉就销毁，
+    ///     XAML 树和图片解码缓存跟着一起释放。
+    ///
+    /// 原来这两层绑在一起，主窗口只能 Hide、不能关，所以托盘常驻时内存一直不降。
     /// </summary>
     public partial class App : Application
     {
-        // 单实例检查的Mutex
         private static Mutex? _mutex;
         private const string MUTEX_NAME = "Global\\小K壁纸单实例Mutex";
 
-        /// <summary>
-        /// Initializes the singleton application object.  This is the first line of authored code
-        /// executed, and as such is the logical equivalent of main() or WinMain().
-        /// </summary>
+        private Window? _mainWindow;
+        private TrayHost? _tray;
+        private AutoWallpaperService? _autoWallpaper;
+        private bool _exiting;
+        private bool _closeTipShown;
+
         public App()
         {
-            this.InitializeComponent();
+            InitializeComponent();
+
+            // WinUI 默认在"最后一个窗口关闭"时结束进程。托盘常驻必须改掉这个默认值，
+            // 否则主窗口一关，后台换壁纸也跟着停。
+            DispatcherShutdownMode = DispatcherShutdownMode.OnExplicitShutdown;
         }
 
-        /// <summary>
-        /// Invoked when the application is launched.
-        /// </summary>
-        /// <param name="args">Details about the launch request and process.</param>
-        protected override void OnLaunched(Microsoft.UI.Xaml.LaunchActivatedEventArgs args)
+        protected override void OnLaunched(LaunchActivatedEventArgs args)
         {
-            // 自启动时以后台模式启动（仅托盘，不抬起桌面窗口）
+            // 注意：非打包（unpackaged）的 WinUI 3 应用里，LaunchActivatedEventArgs.Arguments
+            // 通常是空的，命令行参数只能从 Environment.GetCommandLineArgs() 拿。
+            // 原来只认 args.Arguments，所以 /background 实际上从来没生效过，
+            // 开机自启每次都会把主窗口弹出来。
+            var fullCommandLine = Environment.CommandLine ?? string.Empty;
             var launchArgs = args?.Arguments ?? string.Empty;
-            var startHidden = launchArgs.Contains("--background", System.StringComparison.OrdinalIgnoreCase) || 
-                             launchArgs.Contains("/background", System.StringComparison.OrdinalIgnoreCase);
+            var combinedArgs = fullCommandLine + " " + launchArgs;
 
-            var currentProcess = Process.GetCurrentProcess();
-            System.Diagnostics.Debug.WriteLine($"[启动] PID={currentProcess.Id}, Args='{launchArgs}', startHidden={startHidden}");
+            var startHidden =
+                combinedArgs.Contains("--background", StringComparison.OrdinalIgnoreCase) ||
+                combinedArgs.Contains("/background", StringComparison.OrdinalIgnoreCase);
 
-            // 检查是否已有实例在运行
+            AppLog.Write($"[启动] pid={Environment.ProcessId} 后台={startHidden} 命令行='{fullCommandLine}'");
+
             bool createdNew;
             _mutex = new Mutex(true, MUTEX_NAME, out createdNew);
-            System.Diagnostics.Debug.WriteLine($"[单实例] createdNew={createdNew}, PID={currentProcess.Id}");
 
             if (!createdNew)
             {
-                bool activated = false;
-
-                if (startHidden)
+                // 已经有实例在跑。后台启动（开机自启）就安静退出；
+                // 手动启动则把已经在跑的那个实例的窗口叫出来。
+                if (!startHidden)
                 {
-                    System.Diagnostics.Debug.WriteLine("[单实例] 后台启动参数检测到已有实例，保持后台运行，不激活窗口");
-                }
-                else
-                {
-                    System.Diagnostics.Debug.WriteLine("[单实例] 已有实例在运行，激活现有实例");
-                    activated = ActivateExistingInstance();
+                    AskRunningInstanceToShow();
                 }
 
-                if (!startHidden && !activated)
+                AppLog.Write("[启动] 已有实例在运行，本进程退出");
+                Environment.Exit(0);
+                return;
+            }
+
+            AppDomain.CurrentDomain.ProcessExit += (_, _) => PersistSettingsBeforeExit();
+
+            StartBackgroundServices(startHidden);
+
+            if (!startHidden)
+            {
+                ShowMainWindow();
+            }
+            else
+            {
+                AppLog.Write("[启动] 后台模式：不创建主窗口，只跑托盘 + 自动换壁纸");
+            }
+        }
+
+        /// <summary>
+        /// 启动常驻部分。这两个东西都不依赖 XAML 窗口，可以在整个进程生命周期里独立存在。
+        /// </summary>
+        private void StartBackgroundServices(bool backgroundLaunch)
+        {
+            _autoWallpaper = new AutoWallpaperService();
+            _autoWallpaper.Changed += (desktop, title) =>
+                AppLog.Write($"[自动换壁纸] 已应用 | {(desktop ? "桌面" : "锁屏")} | {title}");
+
+            // 开机自启时 45 秒后先换一张 —— 用户开机就想看到桌面变了，
+            // 而不是等满一个定时周期。手动启动则维持"等一个周期"的原行为。
+            _autoWallpaper.ApplySettings(
+                SettingsManager.LoadSettings(),
+                initialDelaySeconds: backgroundLaunch ? 45 : -1);
+
+            _tray = new TrayHost();
+            _tray.OpenMainRequested += ShowMainWindow;
+            _tray.ChangeNowRequested += () => _ = ChangeNowFromTrayAsync();
+            _tray.ExitRequested += ExitApplication;
+
+            // 开关键盘在注册表里，托盘菜单直接改；主窗口下次打开时读到的也是它
+            _tray.StartupToggled += enabled =>
+                AppLog.Write($"[开机启动] {(enabled ? "已开启" : "已关闭")}");
+
+            _tray.Initialize();
+        }
+
+        /// <summary>
+        /// 主窗口里改了定时设置时调这个，把新的间隔同步给后台调度。
+        /// 不重启进程，也不依赖窗口是否还开着。
+        /// </summary>
+        public void ApplyAutoWallpaperSettings(AppSettings settings)
+        {
+            _autoWallpaper?.ApplySettings(settings);
+        }
+
+        /// <summary>
+        /// 从主窗口冒个气泡。托盘在 App 层，窗口自己已经没有托盘句柄了。
+        /// </summary>
+        public void ShowTrayNotification(string title, string message)
+        {
+            _tray?.ShowNotification(title, message);
+        }
+
+        /// <summary>
+        /// 主窗口里的"立即换一张"。和托盘菜单走同一条路径。
+        /// </summary>
+        public Task<bool> ChangeWallpaperNowAsync(string reason)
+        {
+            return _autoWallpaper?.ChangeAsync(desktop: true, reason) ?? Task.FromResult(false);
+        }
+
+        private async Task ChangeNowFromTrayAsync()
+        {
+            if (_autoWallpaper == null)
+            {
+                return;
+            }
+
+            var ok = await _autoWallpaper.ChangeAsync(desktop: true, reason: "托盘菜单");
+            _tray?.ShowNotification("小K壁纸", ok ? "壁纸已更换" : "换壁纸失败，详见 app.log");
+        }
+
+        /// <summary>
+        /// 打开主界面。已经开着就还原并前置，没开就新建。
+        /// </summary>
+        public void ShowMainWindow()
+        {
+            if (_exiting)
+            {
+                return;
+            }
+
+            if (_mainWindow != null)
+            {
+                try
                 {
-                    System.Diagnostics.Debug.WriteLine("[单实例] 唤醒失败，尝试自动清理旧实例并接管运行");
-                    if (TryRecoverFromStaleInstance(currentProcess.Id))
+                    var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(_mainWindow);
+                    ShowWindow(hwnd, SW_RESTORE);
+                    SetForegroundWindow(hwnd);
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Write($"[主窗口] 激活已有窗口失败: {ex.Message}");
+                }
+
+                return;
+            }
+
+            try
+            {
+                var window = new MainWindow();
+                window.Closed += OnMainWindowClosed;
+                _mainWindow = window;
+                window.Activate();
+                AppLog.Write("[主窗口] 已创建");
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write($"[主窗口] 创建失败: {ex}");
+            }
+        }
+
+        private void OnMainWindowClosed(object sender, WindowEventArgs args)
+        {
+            if (ReferenceEquals(_mainWindow, sender))
+            {
+                _mainWindow = null;
+            }
+
+            // 窗口是真关掉了（不是藏起来），用户容易以为程序退出了。
+            // 只在第一次关的时候冒个泡说明一下，免得每次关都弹。
+            if (!_exiting && !_closeTipShown)
+            {
+                _closeTipShown = true;
+                _tray?.ShowNotification("小K壁纸", "已转入后台，自动换壁纸继续运行");
+            }
+
+            // 窗口对象已经销毁，XAML 树、图片解码缓存都成了垃圾。
+            // 主动收一次，任务管理器里的数字会立刻降下来，不用等下一次自动 GC。
+            GC.Collect(2, GCCollectionMode.Optimized, blocking: false);
+
+            AppLog.Write("[主窗口] 已关闭并释放");
+        }
+
+        /// <summary>
+        /// 真正退出进程。托盘菜单"退出"和主窗口里的退出都走这里。
+        /// </summary>
+        public void ExitApplication()
+        {
+            if (_exiting)
+            {
+                return;
+            }
+
+            _exiting = true;
+            AppLog.Write("[退出] 开始");
+
+            try { PersistSettingsBeforeExit(); } catch { }
+            try { _autoWallpaper?.Dispose(); } catch { }
+            try { _tray?.Dispose(); } catch { }
+            try { _mainWindow?.Close(); } catch { }
+
+            Exit();
+        }
+
+        // ===== 单实例唤醒 =====
+
+        /// <summary>
+        /// 第二次启动时，把已经在跑的那个实例的窗口叫出来。
+        /// 走的是托盘宿主的隐藏窗口 —— 主窗口关着也能找到人。
+        /// </summary>
+        private static void AskRunningInstanceToShow()
+        {
+            for (var attempt = 0; attempt < 5; attempt++)
+            {
+                try
+                {
+                    var hwnd = FindWindow(TrayHost.WindowClassName, null);
+                    if (hwnd != IntPtr.Zero)
                     {
-                        System.Diagnostics.Debug.WriteLine("[单实例] 旧实例清理完成，当前实例接管运行");
-                    }
-                    else
-                    {
-                        System.Diagnostics.Debug.WriteLine("[单实例] 旧实例清理失败或仍有实例存活，退出当前新进程");
-                        Environment.Exit(0);
+                        PostMessage(hwnd, TrayHost.WM_APP_SHOW_MAIN, IntPtr.Zero, IntPtr.Zero);
+                        AppLog.Write($"[单实例] 已请求现有实例显示主窗口（第 {attempt + 1} 次尝试）");
                         return;
                     }
                 }
-                else
+                catch (Exception ex)
                 {
-                    // 重复启动场景必须结束当前新进程，避免后台残留同名进程。
-                    System.Diagnostics.Debug.WriteLine("[单实例] 重复启动处理完成，退出当前新进程");
-                    Environment.Exit(0);
-                    return;
+                    AppLog.Write($"[单实例] 唤醒失败: {ex.Message}");
                 }
+
+                // 对方可能刚启动、托盘窗口还没建好，等一下再试
+                Thread.Sleep(300);
             }
 
-            m_window = new MainWindow(startHidden);
-            m_window.Activate();
-
-            AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
+            AppLog.Write("[单实例] 未找到现有实例的托盘窗口");
         }
 
-        private void OnProcessExit(object? sender, EventArgs e)
-        {
-            PersistSettingsBeforeExit();
-        }
+        // ===== 退出前保存 =====
 
-        private void PersistSettingsBeforeExit()
+        private static void PersistSettingsBeforeExit()
         {
             try
             {
-                if (m_window != null)
+                // 主窗口关着的时候没有设置可存，直接跳过
+                if ((Application.Current as App)?._mainWindow is MainWindow window)
                 {
-                    var method = m_window.GetType().GetMethod(
-                        "PersistSettingsForSystemExit",
-                        System.Reflection.BindingFlags.Instance |
-                        System.Reflection.BindingFlags.Public |
-                        System.Reflection.BindingFlags.NonPublic);
-                    method?.Invoke(m_window, null);
+                    window.SaveSettingsNow();
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[退出] 兜底保存失败: {ex.Message}");
+                AppLog.Write($"[退出] 保存设置失败: {ex.Message}");
             }
         }
 
-        /// <summary>
-        /// 激活现有实例
-        /// </summary>
-        private bool ActivateExistingInstance()
-        {
-            try
-            {
-                var current = Process.GetCurrentProcess();
-                var candidate = Process.GetProcessesByName(current.ProcessName)
-                    .Where(p => p.Id != current.Id)
-                    .OrderBy(p => p.StartTime)
-                    .FirstOrDefault(p => p.MainWindowHandle != IntPtr.Zero);
-
-                var handle = candidate?.MainWindowHandle ?? IntPtr.Zero;
-
-                if (handle == IntPtr.Zero)
-                {
-                    // 回退到标题匹配，兼容旧版本窗口。
-                    handle = FindWindowByTitle("小K壁纸");
-                }
-
-                if (handle != IntPtr.Zero)
-                {
-                    // 显示窗口
-                    ShowWindow(handle, SW_RESTORE);
-                    // 激活窗口
-                    var foregroundOk = SetForegroundWindow(handle);
-                    System.Diagnostics.Debug.WriteLine($"[单实例] 已尝试激活窗口，handle={handle}, foregroundOk={foregroundOk}");
-                    return foregroundOk;
-                }
-
-                System.Diagnostics.Debug.WriteLine("[单实例] 未找到可激活的窗口句柄");
-                return false;
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[单实例] 激活现有实例失败: {ex.Message}");
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// 清理疑似僵尸旧实例，并尝试让当前实例接管运行。
-        /// </summary>
-        private bool TryRecoverFromStaleInstance(int currentPid)
-        {
-            try
-            {
-                var current = Process.GetCurrentProcess();
-                var staleProcesses = Process.GetProcessesByName(current.ProcessName)
-                    .Where(p => p.Id != currentPid)
-                    .ToList();
-
-                if (staleProcesses.Count == 0)
-                {
-                    System.Diagnostics.Debug.WriteLine("[单实例恢复] 未发现旧实例进程");
-                }
-
-                foreach (var process in staleProcesses)
-                {
-                    try
-                    {
-                        process.Refresh();
-                        System.Diagnostics.Debug.WriteLine($"[单实例恢复] 尝试结束旧实例 PID={process.Id}");
-
-                        if (!process.HasExited)
-                        {
-                            process.CloseMainWindow();
-                            if (!process.WaitForExit(2000))
-                            {
-                                process.Kill(true);
-                                process.WaitForExit(3000);
-                            }
-                        }
-
-                        System.Diagnostics.Debug.WriteLine($"[单实例恢复] 旧实例已结束 PID={process.Id}");
-                    }
-                    catch (Exception ex)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[单实例恢复] 结束旧实例失败 PID={process.Id}: {ex.Message}");
-                    }
-                }
-
-                _mutex?.Dispose();
-                _mutex = null;
-
-                bool createdNewAfterCleanup;
-                _mutex = new Mutex(true, MUTEX_NAME, out createdNewAfterCleanup);
-                System.Diagnostics.Debug.WriteLine($"[单实例恢复] createdNewAfterCleanup={createdNewAfterCleanup}");
-                return createdNewAfterCleanup;
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[单实例恢复] 恢复失败: {ex.Message}");
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// 根据窗口标题查找窗口
-        /// </summary>
-        private IntPtr FindWindowByTitle(string title)
-        {
-            return FindWindow(null, title);
-        }
-
-        private Window? m_window;
-
-        // Win32 API 声明
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-        private static extern IntPtr FindWindow(string? lpClassName, string lpWindowName);
+        private static extern IntPtr FindWindow(string? lpClassName, string? lpWindowName);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
         [DllImport("user32.dll")]
         private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
