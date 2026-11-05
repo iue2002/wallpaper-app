@@ -53,7 +53,8 @@ namespace App1
 
             var startHidden =
                 combinedArgs.Contains("--background", StringComparison.OrdinalIgnoreCase) ||
-                combinedArgs.Contains("/background", StringComparison.OrdinalIgnoreCase);
+                combinedArgs.Contains("/background", StringComparison.OrdinalIgnoreCase) ||
+                IsStartupTaskActivation();
 
             AppLog.Write($"[启动] pid={Environment.ProcessId} 后台={startHidden} 命令行='{fullCommandLine}'");
 
@@ -89,6 +90,31 @@ namespace App1
                 // 后台启动没有窗口，但 XAML 框架初始化、JIT、托盘宿主仍然会留下
                 // 一波临时对象。等它们死透之后收一次，任务管理器里的数字能明显降。
                 _ = TrimAfterStartupAsync();
+            }
+        }
+
+        /// <summary>
+        /// 这次启动是不是"开机启动"带来的。
+        ///
+        /// 非打包版：注册表项里带了 /background，命令行能认出来。
+        /// 打包版（MSIX）：由系统按 Package.appxmanifest 里的 uap5:StartupTask 激活，
+        /// 命令行没有参数，只能问 Windows App SDK 的激活信息 —— 这是微软文档给的做法。
+        /// </summary>
+        private static bool IsStartupTaskActivation()
+        {
+            try
+            {
+                var activation = Microsoft.Windows.AppLifecycle.AppInstance
+                    .GetCurrent()
+                    .GetActivatedEventArgs();
+
+                return activation != null &&
+                       activation.Kind == Microsoft.Windows.AppLifecycle.ExtendedActivationKind.StartupTask;
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write($"[启动] 读取激活类型失败: {ex.Message}");
+                return false;
             }
         }
 
