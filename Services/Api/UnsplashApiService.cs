@@ -123,7 +123,7 @@ namespace App1.Services.Api
                         // 统一质量规则：只留横图，宽>=2560 且 高>=1440
                         if (!WallpaperQualityRule.IsAcceptable(width, height))
                         {
-                            System.Diagnostics.Debug.WriteLine($"[Unsplash API] 跳过不合格图片: {width}x{height}");
+                            System.Diagnostics.Debug.WriteLine($"[Unsplash API] 跳过（{WallpaperQualityRule.Explain(width, height)}）: {width}x{height}");
                             continue;
                         }
 

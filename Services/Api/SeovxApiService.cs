@@ -91,7 +91,7 @@ namespace App1.Services.Api
                             var resolution = await GetImageResolutionAsync(imgUrl);
                             if (!WallpaperQualityRule.IsAcceptable(resolution.Width, resolution.Height))
                             {
-                                System.Diagnostics.Debug.WriteLine($"[Seovx API] 跳过不合格壁纸: {imgUrl} ({resolution.Width}x{resolution.Height})");
+                                System.Diagnostics.Debug.WriteLine($"[Seovx API] 跳过（{WallpaperQualityRule.Explain(resolution.Width, resolution.Height)}）: {imgUrl} ({resolution.Width}x{resolution.Height})");
                                 continue;
                             }
 

@@ -36,5 +36,17 @@ namespace App1.Services.Quality
         {
             return $"{width}x{height}";
         }
+
+        /// <summary>
+        /// 说明不合格的具体原因，用于日志排查
+        /// </summary>
+        public static string Explain(int width, int height)
+        {
+            if (width <= 0 || height <= 0) return "读不到尺寸";
+            if (width <= height) return "竖图";
+            if (width < MinWidth) return "宽度不足";
+            if (height < MinHeight) return "高度不足";
+            return "合格";
+        }
     }
 }
