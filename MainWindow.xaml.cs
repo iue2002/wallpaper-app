@@ -768,57 +768,9 @@ namespace App1
                     }
                 }
                 
-                System.Diagnostics.Debug.WriteLine("[流式加载] 开始边获取边显示壁纸（优先Pexels、Bing、360）...");
-
-                // 优先处理Pexels壁纸（第1优先级）
-                System.Diagnostics.Debug.WriteLine("[Pexels壁纸] 请求 15 张（过滤后取8张横向）...");
-                try
-                {
-                    var pexelsWallpapers = await _pexelsApi.GetCuratedWallpapersAsync(perPage: 80);
-                    var selectedWallpapers = pexelsWallpapers.ToList();
-                    if (selectedWallpapers.Count > 0)
-                    {
-                        AddWallpapersToUi(selectedWallpapers, "Pexels壁纸", 8);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[Pexels壁纸] 获取失败: {ex.Message}");
-                }
-
-                // 优先处理Bing历史壁纸（第2优先级）
-                System.Diagnostics.Debug.WriteLine("[Bing壁纸] 获取 5 张...");
-                try
-                {
-                    var bingWallpapers = await _bingApi.GetDailyWallpapersAsync(5);
-                    if (bingWallpapers.Count > 0)
-                    {
-                        AddWallpapersToUi(bingWallpapers, "Bing壁纸");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[Bing壁纸] 获取失败: {ex.Message}");
-                }
-
-                // 优先处理360壁纸（第3优先级）
-                System.Diagnostics.Debug.WriteLine("[360壁纸] 获取 2 张...");
-                try
-                {
-                    var qihuWallpapers = await _qihuApi.GetWallpapersAsync(countPerCategory: 2);
-                    if (qihuWallpapers.Count > 0)
-                    {
-                        AddWallpapersToUi(qihuWallpapers, "360壁纸");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[360壁纸] 获取失败: {ex.Message}");
-                }
-
-                // 并行处理其余源：统一走 SourceGate，全局最多 4 个源同时请求。
-                // 源多了并不代表更快——带宽是常量，同时开 11 条只会互相抢。
-                // 闸门让它们排队，谁先回来谁先上屏，同时给坏源加冷却，不再每次都陪它等超时。
+                // 所有源统一走 SourceGate 并行池，谁先回来谁先上屏。
+                // 原来 Pexels / Bing / 360 是串行 await 的，三个加起来要 4.4 秒才轮到后面的源；
+                // 而 Bing 本身 0.77 秒就能回，却被排在最后才显示，首屏等于白等了 4 秒多。
                 var otherTasks = new Dictionary<string, Task<List<Wallpaper>>>();
 
                 void QueueSource(string tag, string gateKey, Func<Task<List<Wallpaper>>> fetch)
@@ -829,6 +781,15 @@ namespace App1
                         return await fetch();
                     }));
                 }
+
+                // Bing 最轻最快（缩略图单张只有 21 KB），放在首屏主力位置，
+                // 通常 0.8 秒内就能凑齐首屏，用户不用盯着转圈。
+                QueueSource("Bing壁纸", "bing", () => _bingApi.GetDailyWallpapersAsync(8));
+
+                QueueSource("Pexels壁纸", "pexels", async () =>
+                    (await _pexelsApi.GetCuratedWallpapersAsync(perPage: 80)).Take(8).ToList());
+
+                QueueSource("360壁纸", "qihu", () => _qihuApi.GetWallpapersAsync(countPerCategory: 2));
 
                 // Dmoe / PAAA / Seovx 实测已失效，默认不排期：
                 // 它们不会抛异常（Paaa 返回 200 + 空体，Dmoe 只出 1080p 被规则拦），
