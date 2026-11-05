@@ -6,6 +6,8 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
 using App1.Models;
+using App1.Services.Imaging;
+using App1.Services.Quality;
 using Windows.Graphics.Imaging;
 using Windows.Storage.Streams;
 
@@ -102,43 +104,36 @@ namespace App1.Services.Api
 
                         if (!string.IsNullOrEmpty(imgUrl))
                         {
-                            // 下载并缓存图片
+                            // 先只读文件头取尺寸（约 64KB），不合格立刻放弃，不再下载整图
+                            var resolution = await GetImageResolutionAsync(imgUrl);
+                            if (!WallpaperQualityRule.IsAcceptable(resolution.Width, resolution.Height))
+                            {
+                                System.Diagnostics.Debug.WriteLine($"[Dmoe API] 跳过不合格壁纸: {imgUrl} ({resolution.Width}x{resolution.Height})");
+                                continue;
+                            }
+
+                            // 尺寸达标后才下载并缓存
                             var localPath = await DownloadAndCacheImageAsync(imgUrl);
 
-                            // 检查图片分辨率，只保留2k以上的壁纸
-                            var resolution = await GetImageResolutionAsync(imgUrl);
-                            if (resolution.Width >= 2560 || resolution.Height >= 1440)
+                            var wallpaper = new Wallpaper
                             {
-                                var wallpaper = new Wallpaper
-                                {
-                                    Id = Guid.NewGuid().ToString(),
-                                    Title = $"{title} ({resolution.Width}x{resolution.Height})",
-                                    Copyright = "来源: Dmoe",
-                                    Source = WallpaperSource.Dmoe,
-                                    OriginalUrl = imgUrl,
-                                    FullUrl = imgUrl,
-                                    ThumbUrl = imgUrl, // 直接使用原图作为缩略图
-                                    LocalPath = localPath,
-                                    IsDownloaded = !string.IsNullOrEmpty(localPath),
-                                    AddedDate = DateTime.Now
-                                };
+                                Id = Guid.NewGuid().ToString(),
+                                Title = $"{title} ({resolution.Width}x{resolution.Height})",
+                                Copyright = "来源: Dmoe",
+                                Source = WallpaperSource.Dmoe,
+                                OriginalUrl = imgUrl,
+                                FullUrl = imgUrl,
+                                ThumbUrl = imgUrl, // 直接使用原图作为缩略图
+                                LocalPath = localPath,
+                                IsDownloaded = !string.IsNullOrEmpty(localPath),
+                                AddedDate = DateTime.Now
+                            };
 
-                                wallpapers.Add(wallpaper);
-                                System.Diagnostics.Debug.WriteLine($"[Dmoe API] 成功获取壁纸: {imgUrl} ({resolution.Width}x{resolution.Height})");
-                                if (!string.IsNullOrEmpty(localPath))
-                                {
-                                    System.Diagnostics.Debug.WriteLine($"[Dmoe API] 图片已缓存到: {localPath}");
-                                }
-                            }
-                            else
+                            wallpapers.Add(wallpaper);
+                            System.Diagnostics.Debug.WriteLine($"[Dmoe API] 成功获取壁纸: {imgUrl} ({resolution.Width}x{resolution.Height})");
+                            if (!string.IsNullOrEmpty(localPath))
                             {
-                                System.Diagnostics.Debug.WriteLine($"[Dmoe API] 跳过低分辨率壁纸: {imgUrl} ({resolution.Width}x{resolution.Height})");
-                                // 如果已下载，删除低分辨率图片
-                                if (!string.IsNullOrEmpty(localPath) && File.Exists(localPath))
-                                {
-                                    File.Delete(localPath);
-                                    System.Diagnostics.Debug.WriteLine($"[Dmoe API] 删除低分辨率图片: {localPath}");
-                                }
+                                System.Diagnostics.Debug.WriteLine($"[Dmoe API] 图片已缓存到: {localPath}");
                             }
                         }
                     }
@@ -200,19 +195,9 @@ namespace App1.Services.Api
         {
             try
             {
-                // 下载图片数据
-                var imageBytes = await _httpClient.GetByteArrayAsync(imageUrl);
-                
-                // 使用内存流读取图片
-                using (var stream = new MemoryStream(imageBytes))
-                {
-                    using (var randomAccessStream = stream.AsRandomAccessStream())
-                    {
-                        // 解码图片
-                        var decoder = await BitmapDecoder.CreateAsync(randomAccessStream);
-                        return new Size((int)decoder.PixelWidth, (int)decoder.PixelHeight);
-                    }
-                }
+                // 只读文件头（约 64KB）解析宽高，不再下载整张图片
+                var probe = await ImageProbe.GetSizeAsync(_httpClient, imageUrl);
+                return new Size(probe.Width, probe.Height);
             }
             catch (Exception ex)
             {

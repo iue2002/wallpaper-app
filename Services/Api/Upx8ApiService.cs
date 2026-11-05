@@ -6,6 +6,8 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
 using App1.Models;
+using App1.Services.Imaging;
+using App1.Services.Quality;
 using Windows.Graphics.Imaging;
 using Windows.Storage.Streams;
 
@@ -210,9 +212,9 @@ namespace App1.Services.Api
         /// </summary>
         private async Task TryAddWallpaperAsync(List<Wallpaper> wallpapers, string imageUrl, int width, int height)
         {
-            if (width < 2560 && height < 1440)
+            if (!WallpaperQualityRule.IsAcceptable(width, height))
             {
-                System.Diagnostics.Debug.WriteLine($"[Upx8 API] 跳过低分辨率壁纸: {imageUrl} ({width}x{height})");
+                System.Diagnostics.Debug.WriteLine($"[Upx8 API] 跳过不合格壁纸: {imageUrl} ({width}x{height})");
                 return;
             }
 
@@ -247,15 +249,9 @@ namespace App1.Services.Api
         {
             try
             {
-                var imageBytes = await _httpClient.GetByteArrayAsync(imageUrl);
-                using (var stream = new MemoryStream(imageBytes))
-                {
-                    using (var randomAccessStream = stream.AsRandomAccessStream())
-                    {
-                        var decoder = await BitmapDecoder.CreateAsync(randomAccessStream);
-                        return new Size((int)decoder.PixelWidth, (int)decoder.PixelHeight);
-                    }
-                }
+                // 只读文件头（约 64KB）解析宽高，不再下载整张图片
+                var probe = await ImageProbe.GetSizeAsync(_httpClient, imageUrl);
+                return new Size(probe.Width, probe.Height);
             }
             catch (Exception ex)
             {

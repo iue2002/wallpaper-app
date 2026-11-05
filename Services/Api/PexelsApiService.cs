@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
 using App1.Models;
+using App1.Services.Quality;
 
 namespace App1.Services.Api
 {
@@ -82,26 +83,11 @@ namespace App1.Services.Api
                         var width = item.GetProperty("width").GetInt32();
                         var height = item.GetProperty("height").GetInt32();
                         
-                        // 统一2K过滤：至少满足2560x1440中的一个维度
-                        if (width < 2560 && height < 1440)
+                        // 统一质量规则：只留横图，宽>=2560 且 高>=1440
+                        if (!WallpaperQualityRule.IsAcceptable(width, height))
                         {
-                            System.Diagnostics.Debug.WriteLine($"[Pexels API] 跳过低分辨率图片: {width}x{height}");
+                            System.Diagnostics.Debug.WriteLine($"[Pexels API] 跳过不合格图片: {width}x{height}");
                             continue;
-                        }
-
-                        // 竖屏图片额外要求4K级别，避免竖屏模糊
-                        if (width <= height)
-                        {
-                            // 竖屏图片：检查是否为4K以上高分辨率（宽度>=2160 或 高度>=3840）
-                            bool is4KOrHigher = width >= 2160 || height >= 3840;
-                            
-                            if (!is4KOrHigher)
-                            {
-                                System.Diagnostics.Debug.WriteLine($"[Pexels API] 跳过低分辨率竖屏: {width}x{height}");
-                                continue;
-                            }
-                            
-                            System.Diagnostics.Debug.WriteLine($"[Pexels API] ✓ 保留4K竖屏: {width}x{height}");
                         }
                         
                         // 获取图片URL（使用最高质量）
@@ -183,26 +169,11 @@ namespace App1.Services.Api
                         var width = item.GetProperty("width").GetInt32();
                         var height = item.GetProperty("height").GetInt32();
                         
-                        // 统一2K过滤：至少满足2560x1440中的一个维度
-                        if (width < 2560 && height < 1440)
+                        // 统一质量规则：只留横图，宽>=2560 且 高>=1440
+                        if (!WallpaperQualityRule.IsAcceptable(width, height))
                         {
-                            System.Diagnostics.Debug.WriteLine($"[Pexels 搜索] 跳过低分辨率图片: {width}x{height}");
+                            System.Diagnostics.Debug.WriteLine($"[Pexels 搜索] 跳过不合格图片: {width}x{height}");
                             continue;
-                        }
-
-                        // 竖屏图片额外要求4K级别，避免竖屏模糊
-                        if (width <= height)
-                        {
-                            // 竖屏图片：检查是否为4K以上高分辨率（宽度>=2160 或 高度>=3840）
-                            bool is4KOrHigher = width >= 2160 || height >= 3840;
-                            
-                            if (!is4KOrHigher)
-                            {
-                                System.Diagnostics.Debug.WriteLine($"[Pexels 搜索] 跳过低分辨率竖屏: {width}x{height}");
-                                continue;
-                            }
-                            
-                            System.Diagnostics.Debug.WriteLine($"[Pexels 搜索] ✓ 保留4K竖屏: {width}x{height}");
                         }
                         
                         var src = item.GetProperty("src");
