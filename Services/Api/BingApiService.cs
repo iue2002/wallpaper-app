@@ -117,7 +117,11 @@ namespace App1.Services.Api
                         
                         // 构建超高清图片URL（UHD = 4K）
                         var fullUrl = $"https://cn.bing.com{urlBase}_UHD.jpg";
-                        var thumbUrl = $"https://cn.bing.com{urlBase}_1920x1080.jpg";
+
+                        // 列表缩略图：Bing 提供固定的尺寸档，_400x240 正好对上 280x200 的卡片，
+                        // 实测 21 KB，而原来的 _1920x1080 档约 300 KB —— 同样一张图省 15 倍流量。
+                        // 注意 480x270 这一档不存在（返回 404），只能用 400x240 或 800x480。
+                        var thumbUrl = $"https://cn.bing.com{urlBase}_400x240.jpg";
                         
                         wallpapers.Add(new Wallpaper
                         {
