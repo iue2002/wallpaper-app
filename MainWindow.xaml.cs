@@ -1251,6 +1251,13 @@ namespace App1
         {
             _isImmersiveMode = isImmersive;
             
+            // 顶部不留标题栏行：两种模式内容都直接顶到窗口最上方，
+            // 只让系统绘制的窗口按钮浮在内容之上。
+            // 原来网格模式会开一条 48px 的标题栏行，里面只有左侧一个标题文字，
+            // 其余全是背景色，看上去就是顶部一条突兀的空白遮罩。
+            TitleBarRow.Height = new GridLength(0);
+            CustomTitleBar.Visibility = Visibility.Collapsed;
+            
             if (_isImmersiveMode)
             {
                 // 切换到沉浸式模式
@@ -1261,10 +1268,6 @@ namespace App1
                 
                 WallpaperScrollViewer.Visibility = Visibility.Collapsed;
                 ImmersiveFlipView.Visibility = Visibility.Visible;
-                CustomTitleBar.Visibility = Visibility.Collapsed;  // 隐藏自定义标题栏内容
-                
-                // 隐藏标题栏行（高度设为0）
-                TitleBarRow.Height = new GridLength(0);
                 
                 btnToggleViewMode.Content = "\uE8A9";  // 网格图标
                 ToolTipService.SetToolTip(btnToggleViewMode, "切换到网格模式");
@@ -1311,10 +1314,6 @@ namespace App1
                 
                 WallpaperScrollViewer.Visibility = Visibility.Visible;
                 ImmersiveFlipView.Visibility = Visibility.Collapsed;
-                CustomTitleBar.Visibility = Visibility.Visible;  // 显示自定义标题栏
-                
-                // 显示标题栏行（高度设为48）
-                TitleBarRow.Height = new GridLength(48);
                 
                 btnToggleViewMode.Content = "\uE740";  // 全屏图标
                 ToolTipService.SetToolTip(btnToggleViewMode, "切换到沉浸式模式");
