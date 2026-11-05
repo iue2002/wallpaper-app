@@ -115,7 +115,10 @@ namespace
 		}
 
 		HRESULT hr = E_FAIL;
-		for (int attempt = 1; attempt <= 60; ++attempt)
+		// 24 次 × 500ms = 12 秒，必须在宿主 15 秒超时之内跑完：
+		// 超过的话宿主只看到"注入超时"，而这里的失败原因（共享内存里 Status=Failed）
+		// 永远没机会被读到。
+		for (int attempt = 1; attempt <= 24; ++attempt)
 		{
 			const std::wstring connection = L"XiaoKTapConnection" + std::to_wstring(attempt);
 

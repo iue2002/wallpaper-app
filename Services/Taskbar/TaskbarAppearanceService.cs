@@ -24,6 +24,17 @@ namespace App1.Services.Taskbar
         private const int WatchdogIntervalMs = 3000;
         private const int InjectionTimeoutMs = 15000;
 
+        /// <summary>
+        /// 看门狗连续注入失败多少次后放弃。
+        ///
+        /// 这是有实际事故依据的：XAML 诊断不可用的机器上（Win11 24H2+ 一部分系统
+        /// 没有 XamlDiagnostics.dll，InitializeXamlDiagnosticsEx 恒返回 0x80070490），
+        /// 原来的逻辑是"先把档位记下来，看门狗每 15 秒重试"，每次重试都要往
+        /// explorer 挂 15 秒的钩子 —— explorer 被反复占用，任务栏一直闪。
+        /// explorer 晚启动的场景三次（约 45 秒）足够覆盖，坏机器三次就该闭嘴。
+        /// </summary>
+        private const int MaxConsecutiveFailures = 3;
+
         /// <summary>透明：完全透明（alpha=0）。</summary>
         private const int ClearColor = 0x00000000;
 
@@ -39,6 +50,7 @@ namespace App1.Services.Taskbar
         private IntPtr _module;
         private uint _injectedPid;
         private DateTime _lastInjectAttempt = DateTime.MinValue;
+        private int _consecutiveFailures;
         private Timer? _watchdog;
         private bool _disposed;
 
@@ -95,9 +107,8 @@ namespace App1.Services.Taskbar
                     return false;
                 }
 
-                // 先把目标档位记下来：即使这次注入失败，看门狗也会继续重试，
-                // 开机自启那种任务栏还没准备好的场景不用用户再点一次。
-                Current = effect;
+                // 用户手动点一次，重新给看门狗计数机会
+                _consecutiveFailures = 0;
 
                 if (!EnsureResources())
                 {
@@ -107,19 +118,28 @@ namespace App1.Services.Taskbar
                 if (effect == TaskbarEffect.Off)
                 {
                     PublishMode(effect);
+                    Current = effect;
                     LastError = null;
                     return true;
                 }
 
-                StartWatchdog();
+                // 记下这次尝试的时间，看门狗不会在 3 秒后立刻又来一遍
+                _lastInjectAttempt = DateTime.UtcNow;
 
                 if (!EnsureInjected())
                 {
+                    // 失败就失败：不再进入重试循环。原来的"先记档位、看门狗慢慢重试"
+                    // 在 XAML 诊断不可用的机器上等于每 15 秒把 explorer 挂住 15 秒，
+                    // 任务栏闪个不停。想再试，点菜单再来。
+                    Current = TaskbarEffect.Off;
+                    StopWatchdog();
                     return false;
                 }
 
                 PublishMode(effect);
+                Current = effect;
                 LastError = null;
+                StartWatchdog();
                 return true;
             }
         }
@@ -281,6 +301,19 @@ namespace App1.Services.Taskbar
             _watchdog ??= new Timer(_ => WatchdogTick(), null, WatchdogIntervalMs, WatchdogIntervalMs);
         }
 
+        private void StopWatchdog()
+        {
+            try
+            {
+                _watchdog?.Dispose();
+            }
+            catch
+            {
+            }
+
+            _watchdog = null;
+        }
+
         /// <summary>
         /// explorer 重启（任务栏重建）后注入会失效，这里发现 pid 变了就重新挂一次。
         /// 用轮询而不是 WinEventHook：3 秒一次 EnumWindows 级别的开销可以忽略，
@@ -321,7 +354,23 @@ namespace App1.Services.Taskbar
 
                     if (EnsureInjected())
                     {
+                        _consecutiveFailures = 0;
                         PublishMode(Current);
+                    }
+                    else
+                    {
+                        _consecutiveFailures++;
+
+                        if (_consecutiveFailures >= MaxConsecutiveFailures)
+                        {
+                            // 连续失败到上限：这台机器的 XAML 诊断多半根本起不来，
+                            // 再试只是每 15 秒把 explorer 挂住一次。停下，写清原因。
+                            App1.Services.Diagnostics.AppLog.Write(
+                                $"[任务栏] 连续 {_consecutiveFailures} 次注入失败（{LastError}），暂停自动重试");
+
+                            Current = TaskbarEffect.Off;
+                            StopWatchdog();
+                        }
                     }
                 }
             }
