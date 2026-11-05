@@ -976,6 +976,9 @@ namespace App1
         /// </summary>
         private async void WallpaperItem_DoubleTapped(object sender, Microsoft.UI.Xaml.Input.DoubleTappedRoutedEventArgs e)
         {
+            // 双击已经在"设为壁纸"了，这一下不要再让父级当成普通点击处理
+            e.Handled = true;
+
             // 双击是「设为壁纸」，不该顺带弹预览 —— 把待执行的单击预览取消掉
             _cardTapCts?.Cancel();
 
@@ -994,7 +997,15 @@ namespace App1
         /// </summary>
         private async System.Threading.Tasks.Task SetWallpaperAsync(Wallpaper wallpaper)
         {
-            await _wallpaperSetGate.WaitAsync();
+            // 闸门必须带超时：上一次如果因为系统调用不返回而挂着，
+            // 后来者的 await 会永远排在那里，"正在设置壁纸"也就永远收不掉。
+            if (!await _wallpaperSetGate.WaitAsync(TimeSpan.FromSeconds(20)))
+            {
+                System.Diagnostics.Debug.WriteLine("[壁纸设置] ⚠️ 上一次设置还没收尾，忽略本次点击");
+                ShowToast("上一次设置还没结束，请稍候", isSuccess: false);
+                return;
+            }
+
             try
             {
                 // 显示全屏进度提示
@@ -2847,6 +2858,17 @@ namespace App1
         /// </summary>
         private void WallpaperGridItem_Tapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
         {
+            // 标记已处理：不标记的话同一次点击会继续冒泡到 GridView，
+            // 被外层再识别一轮，双击时容易和下面的 DoubleTapped 撞车。
+            e.Handled = true;
+
+            // 预览已经打开时，这一下点击归预览层自己处理（关闭），
+            // 不能再启动一次"打开预览"，否则连点两下会疯狂开关。
+            if (FullScreenImageViewer.Visibility == Visibility.Visible)
+            {
+                return;
+            }
+
             if (sender is not FrameworkElement element || element.DataContext is not Wallpaper wallpaper)
             {
                 return;
@@ -2877,6 +2899,13 @@ namespace App1
                 return;
             }
 
+            // 这 220ms 里用户可能已经又点了一下把预览关掉，或者系统补了一个
+            // DoubleTapped。重复打开会让 _previewVersion 来回跳，状态就错位了。
+            if (FullScreenImageViewer.Visibility == Visibility.Visible)
+            {
+                return;
+            }
+
             ShowFullScreenImage(wallpaper);
         }
 
@@ -2901,10 +2930,6 @@ namespace App1
                     .GetElementVisual(FullScreenImageHigh).Opacity = 0f;
 
                 FullScreenImageViewer.Visibility = Visibility.Visible;
-
-                // 刚设为可见时还没走布局，ActualWidth 是 0，拿它算缩放原点会变成左上角。
-                // 这里强制跑一次布局，代价只有一个 Grid。
-                FullScreenImageViewer.UpdateLayout();
 
                 if (!string.IsNullOrEmpty(wallpaper.ThumbUrl))
                 {
@@ -2950,17 +2975,22 @@ namespace App1
             var host = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview
                 .GetElementVisual(FullScreenImageHost);
 
-            // 以预览层中心为缩放原点，视觉上像是从画面中间撑开
-            host.CenterPoint = new System.Numerics.Vector3(
-                (float)FullScreenImageViewer.ActualWidth / 2f,
-                (float)FullScreenImageViewer.ActualHeight / 2f,
-                0f);
+            // 缩放原点取 host 自己的尺寸。它由图片撑开，合成层可以直接读，
+            // 不需要为了拿 ActualWidth 去调 UpdateLayout() ——
+            // 那个调用会同步重排整棵树（GridView 里几百张卡片也在其中），
+            // 点一下就能把 UI 线程按住好几百毫秒，看着就是"点开就卡死"。
+            var hostSize = host.Size;
+            if (hostSize.X > 0 && hostSize.Y > 0)
+            {
+                host.CenterPoint = new System.Numerics.Vector3(hostSize.X / 2f, hostSize.Y / 2f, 0f);
 
-            var scale = compositor.CreateVector3KeyFrameAnimation();
-            scale.InsertKeyFrame(0f, new System.Numerics.Vector3(0.86f, 0.86f, 1f));
-            scale.InsertKeyFrame(1f, System.Numerics.Vector3.One, easeOut);
-            scale.Duration = TimeSpan.FromMilliseconds(260);
-            host.StartAnimation("Scale", scale);
+                var scale = compositor.CreateVector3KeyFrameAnimation();
+                scale.InsertKeyFrame(0f, new System.Numerics.Vector3(0.86f, 0.86f, 1f));
+                scale.InsertKeyFrame(1f, System.Numerics.Vector3.One, easeOut);
+                scale.Duration = TimeSpan.FromMilliseconds(260);
+                host.StartAnimation("Scale", scale);
+            }
+            // 尺寸还没算出来时只做整层淡入，不要为了一个 0.86 → 1 的缩放去强制布局
         }
 
         /// <summary>

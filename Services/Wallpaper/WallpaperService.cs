@@ -184,11 +184,16 @@ namespace App1.Services.WallpaperSetter
 
                 // 串行执行，并给等待设上限。上一个请求万一卡在系统调用里，
                 // 也不能让后面的请求无限期干等。
-                if (await _applyLock.WaitAsync(TimeSpan.FromSeconds(8)))
+                if (await _applyLock.WaitAsync(TimeSpan.FromSeconds(3)))
                 {
                     try
                     {
-                        applied = await RunOnStaThreadAsync(() => ApplyWallpaperCore(normalizedPath));
+                        // 12 秒是硬上限：系统调用不返回也不再陪着等，
+                        // 否则"正在设置壁纸"会一直挂着，看着就像整个软件卡死了。
+                        // 超时返回 default(bool) = false，按设置失败处理。
+                        applied = await RunOnStaThreadAsync(
+                            () => ApplyWallpaperCore(normalizedPath),
+                            TimeSpan.FromSeconds(12));
                     }
                     finally
                     {
@@ -580,11 +585,11 @@ namespace App1.Services.WallpaperSetter
         }
 
         /// <summary>
-        /// 在独立 STA 线程上执行一段同步代码。
-        /// IDesktopWallpaper 是 COM 组件，单独给它一个单元可以避开和 UI 线程的
-        /// 单元模型纠缠；同时保证这些阻塞式系统调用绝不会落在 UI 线程上。
+        /// 在独立 STA 线程上执行一段同步代码，并设硬性等待上限。
+        /// 系统调用有可能永远不返回（explorer 卡住、显示驱动挂起），
+        /// 没有上限的话 await 会一直悬着，"正在设置壁纸"的提示也就永远收不掉。
         /// </summary>
-        private static Task<T> RunOnStaThreadAsync<T>(Func<T> func)
+        private static async Task<T?> RunOnStaThreadAsync<T>(Func<T> func, TimeSpan timeout)
         {
             var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -607,7 +612,15 @@ namespace App1.Services.WallpaperSetter
             thread.SetApartmentState(ApartmentState.STA);
             thread.Start();
 
-            return tcs.Task;
+            var finished = await Task.WhenAny(tcs.Task, Task.Delay(timeout)).ConfigureAwait(false);
+            if (finished != tcs.Task)
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"[壁纸设置] ⚠️ 系统调用超过 {timeout.TotalSeconds:0} 秒未返回，先放弃等待（线程继续在后台跑）");
+                return default;
+            }
+
+            return await tcs.Task.ConfigureAwait(false);
         }
 
         /// <summary>
@@ -616,11 +629,22 @@ namespace App1.Services.WallpaperSetter
         /// </summary>
         private bool ApplyWallpaperCore(string normalizedPath)
         {
-            var comSuccess = false;
+            // 先走 SystemParametersInfo：一次 API 调用就能落地，不创建任何 COM 对象。
+            //
+            // 顺序原来是反的 —— 先 COM 再 SPI，等于每次换壁纸都做两遍。
+            // 更要命的是 IDesktopWallpaper 属于 explorer 进程里的 LocalServer，
+            // 在没有消息泵的 STA 线程上同步调用它，一旦 explorer 正好在处理我们的
+            // WM_SETTINGCHANGE 广播，两边就会互相等着对方释放 —— 桌面和我们一起挂住。
+            if (SetWallpaperFallback(normalizedPath))
+            {
+                System.Diagnostics.Debug.WriteLine("[壁纸设置] ✅ 已通过 SystemParametersInfo 设置");
+                return true;
+            }
+
+            System.Diagnostics.Debug.WriteLine("[壁纸设置] SPI 未成功，退回 IDesktopWallpaper COM...");
 
             try
             {
-                System.Diagnostics.Debug.WriteLine("[壁纸设置] 尝试使用 COM 接口（IDesktopWallpaper）...");
                 var wallpaper = (IDesktopWallpaper)new DesktopWallpaperClass();
 
                 try
@@ -630,8 +654,8 @@ namespace App1.Services.WallpaperSetter
 
                     // 设置壁纸（null 表示所有显示器）
                     wallpaper.SetWallpaper(null!, normalizedPath);
-                    comSuccess = true;
                     System.Diagnostics.Debug.WriteLine("[壁纸设置] ✅ COM 接口调用成功");
+                    return true;
                 }
                 finally
                 {
@@ -655,10 +679,7 @@ namespace App1.Services.WallpaperSetter
                 }
             }
 
-            // 无论 COM 成败都补一次 SPI：老版本 Windows 上 COM 有时不生效
-            var fallbackSuccess = SetWallpaperFallback(normalizedPath);
-
-            return comSuccess || fallbackSuccess;
+            return false;
         }
 
     }
