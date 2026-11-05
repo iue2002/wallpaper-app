@@ -214,7 +214,7 @@ namespace App1.Services.Api
         {
             if (!WallpaperQualityRule.IsAcceptable(width, height))
             {
-                System.Diagnostics.Debug.WriteLine($"[Upx8 API] 跳过不合格壁纸: {imageUrl} ({width}x{height})");
+                System.Diagnostics.Debug.WriteLine($"[Upx8 API] 跳过（{WallpaperQualityRule.Explain(width, height)}）: {imageUrl} ({width}x{height})");
                 return;
             }
 

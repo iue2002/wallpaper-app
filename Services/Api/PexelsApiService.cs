@@ -59,7 +59,7 @@ namespace App1.Services.Api
                 System.Diagnostics.Debug.WriteLine($"[Pexels API] 获取精选壁纸（第 {page} 页，每页 {perPage} 张）...");
                 
                 // 不限制方向，获取所有高质量图片（包括8K竖屏）
-                var url = $"{BASE_URL}/curated?page={page}&per_page={perPage}";
+                var url = $"{BASE_URL}/curated?page={page}&per_page={perPage}&orientation=landscape";
                 
                 var response = await _httpClient.GetStringAsync(url);
                 var jsonDoc = JsonDocument.Parse(response);
@@ -86,7 +86,7 @@ namespace App1.Services.Api
                         // 统一质量规则：只留横图，宽>=2560 且 高>=1440
                         if (!WallpaperQualityRule.IsAcceptable(width, height))
                         {
-                            System.Diagnostics.Debug.WriteLine($"[Pexels API] 跳过不合格图片: {width}x{height}");
+                            System.Diagnostics.Debug.WriteLine($"[Pexels API] 跳过（{WallpaperQualityRule.Explain(width, height)}）: {width}x{height}");
                             continue;
                         }
                         
@@ -148,7 +148,7 @@ namespace App1.Services.Api
                 System.Diagnostics.Debug.WriteLine($"[Pexels API] 搜索主题: {query}");
                 
                 // 不限制方向，获取所有高质量图片
-                var url = $"{BASE_URL}/search?query={Uri.EscapeDataString(query)}&page={page}&per_page={perPage}";
+                var url = $"{BASE_URL}/search?query={Uri.EscapeDataString(query)}&page={page}&per_page={perPage}&orientation=landscape";
                 
                 var response = await _httpClient.GetStringAsync(url);
                 var jsonDoc = JsonDocument.Parse(response);
@@ -172,7 +172,7 @@ namespace App1.Services.Api
                         // 统一质量规则：只留横图，宽>=2560 且 高>=1440
                         if (!WallpaperQualityRule.IsAcceptable(width, height))
                         {
-                            System.Diagnostics.Debug.WriteLine($"[Pexels 搜索] 跳过不合格图片: {width}x{height}");
+                            System.Diagnostics.Debug.WriteLine($"[Pexels 搜索] 跳过（{WallpaperQualityRule.Explain(width, height)}）: {width}x{height}");
                             continue;
                         }
                         
