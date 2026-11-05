@@ -24,9 +24,13 @@ namespace App1.Services.Background
     public sealed class AutoWallpaperService : IDisposable
     {
         private readonly WallpaperService _wallpaperService = new();
-        private readonly BingApiService _bingApi = new();
-        private readonly Upx8ApiService _upx8Api = new();
-        private readonly PexelsApiService _pexelsApi = new();
+
+        // 取图服务懒创建。后台常驻期间大部分时间都在等定时器，
+        // 没必要一开机就把三个 HttpClient、连接池、API 配置全建出来 ——
+        // 第一次真要换壁纸时再建，启动峰值能低一截。
+        private readonly Lazy<BingApiService> _bingApi = new(() => new BingApiService(), isThreadSafe: true);
+        private readonly Lazy<Upx8ApiService> _upx8Api = new(() => new Upx8ApiService(), isThreadSafe: true);
+        private readonly Lazy<PexelsApiService> _pexelsApi = new(() => new PexelsApiService(), isThreadSafe: true);
 
         /// <summary>同一时刻只允许一次换壁纸流程，避免定时器连发时几个下载撞在一起。</summary>
         private readonly SemaphoreSlim _changeGate = new(1, 1);
@@ -162,9 +166,9 @@ namespace App1.Services.Background
         {
             var sources = new (string Name, Func<Task<List<Wallpaper>>> Fetch)[]
             {
-                ("Bing", () => _bingApi.GetDailyWallpapersAsync(8)),
-                ("Upx8", () => _upx8Api.GetWallpapersAsync(3)),
-                ("Pexels", () => _pexelsApi.GetCuratedWallpapersAsync(40))
+                ("Bing", () => _bingApi.Value.GetDailyWallpapersAsync(8)),
+                ("Upx8", () => _upx8Api.Value.GetWallpapersAsync(3)),
+                ("Pexels", () => _pexelsApi.Value.GetCuratedWallpapersAsync(40))
             };
 
             var start = Random.Shared.Next(sources.Length);
@@ -215,7 +219,8 @@ namespace App1.Services.Background
             _desktopTimer = null;
             _lockScreenTimer = null;
 
-            try { _pexelsApi.Dispose(); } catch { }
+            // Bing / Upx8 没有实现 IDisposable，只有 Pexels 需要显式释放
+            try { if (_pexelsApi.IsValueCreated) _pexelsApi.Value.Dispose(); } catch { }
             try { _changeGate.Dispose(); } catch { }
         }
     }

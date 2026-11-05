@@ -84,6 +84,28 @@ namespace App1
             else
             {
                 AppLog.Write("[启动] 后台模式：不创建主窗口，只跑托盘 + 自动换壁纸");
+
+                // 后台启动没有窗口，但 XAML 框架初始化、JIT、托盘宿主仍然会留下
+                // 一波临时对象。等它们死透之后收一次，任务管理器里的数字能明显降。
+                _ = TrimAfterStartupAsync();
+            }
+        }
+
+        /// <summary>
+        /// 后台启动稳定之后回收一次内存。
+        /// 放在线程池上跑，别让强制 GC 的几百毫秒卡在启动路径里。
+        /// </summary>
+        private static async Task TrimAfterStartupAsync()
+        {
+            await Task.Delay(3000).ConfigureAwait(false);
+
+            try
+            {
+                await Task.Run(() => MemoryTrimmer.Compact("后台启动稳定后")).ConfigureAwait(false);
+            }
+            catch
+            {
+                // 回收失败不影响功能
             }
         }
 
@@ -205,9 +227,10 @@ namespace App1
                 _tray?.ShowNotification("小K壁纸", "已转入后台，自动换壁纸继续运行");
             }
 
-            // 窗口对象已经销毁，XAML 树、图片解码缓存都成了垃圾。
-            // 主动收一次，任务管理器里的数字会立刻降下来，不用等下一次自动 GC。
-            GC.Collect(2, GCCollectionMode.Optimized, blocking: false);
+            // 窗口已经销毁，MainWindow 里也把 ItemsSource、Image.Source 都断掉了。
+            // 这里再强制收一次并把工作集换出去：GC 归还不等于任务管理器数字会降，
+            // 不 Trim 的话物理页还挂在进程上，看起来就像"只释放了 UI"。
+            MemoryTrimmer.Compact("主窗口关闭");
 
             AppLog.Write("[主窗口] 已关闭并释放");
         }
