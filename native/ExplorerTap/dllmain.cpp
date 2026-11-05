@@ -40,11 +40,60 @@ namespace
 			return 1;
 		}
 
-		wchar_t dllPath[MAX_PATH]{};
-		if (!GetModuleFileNameW(g_module, dllPath, MAX_PATH))
+		wchar_t selfPath[MAX_PATH]{};
+		if (!GetModuleFileNameW(g_module, selfPath, MAX_PATH))
 		{
 			TapLog(L"[tap] 取自身路径失败");
 			return 2;
+		}
+
+		const std::wstring dllPath = selfPath;
+
+		// 找 XamlDiagnostics.dll。
+		//
+		// InitializeXamlDiagnosticsEx 的第三个参数就是它的路径，传 nullptr 时
+		// Windows.UI.Xaml.dll 会自己去 C:\Windows 下找；Win11 26200 的 System32 里
+		// 没有这个文件，于是直接返回 0x80070490(ERROR_NOT_FOUND)，注入永远起不来。
+		// 这个 DLL 由 Windows SDK 分发（Windows Kits\10\bin\x64\XamlDiagnostics），
+		// 依赖只有 msvcrt/CoreMessaging/OLEAUT32，可以安全地跟着程序走。
+		std::wstring xamlDiagnostics;
+		{
+			if (wchar_t* slash = wcsrchr(selfPath, L'\\'))
+			{
+				*(slash + 1) = L'\0';
+				std::wstring candidate = std::wstring(selfPath) + L"xamldiagnostics.dll";
+				if (GetFileAttributesW(candidate.c_str()) != INVALID_FILE_ATTRIBUTES)
+				{
+					xamlDiagnostics = candidate;
+				}
+			}
+
+			if (xamlDiagnostics.empty())
+			{
+				wchar_t systemDir[MAX_PATH]{};
+				if (GetSystemDirectoryW(systemDir, MAX_PATH))
+				{
+					std::wstring candidate = std::wstring(systemDir) + L"\\XamlDiagnostics.dll";
+					if (GetFileAttributesW(candidate.c_str()) != INVALID_FILE_ATTRIBUTES)
+					{
+						xamlDiagnostics = candidate;
+					}
+				}
+			}
+
+			if (xamlDiagnostics.empty())
+			{
+				TapLog(L"[tap] 没找到 XamlDiagnostics.dll，交给系统兜底（多半还是 0x80070490）");
+			}
+			else
+			{
+				// 先自己加载一次：真加载不进来（位数不对、依赖缺失）在日志里立刻能看出来，
+				// 免得只看到一个笼统的错误码。
+				const HMODULE preload = LoadLibraryExW(xamlDiagnostics.c_str(), nullptr,
+					LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+				TapLog(L"[tap] XamlDiagnostics=%s 预加载=%s",
+					xamlDiagnostics.c_str(), preload ? L"成功" : L"失败");
+			}
 		}
 
 		const HMODULE xaml = LoadLibraryExW(L"Windows.UI.Xaml.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -72,10 +121,11 @@ namespace
 
 			// 每次尝试都换一个线程：XAML 诊断一个线程只能初始化一次，
 			// 失败重试必须在新线程上进行。
-			std::thread([&hr, initialize, connection, dllPath]
+			std::thread([&hr, initialize, connection, dllPath, xamlDiagnostics]
 			{
-				hr = initialize(connection.c_str(), GetCurrentProcessId(), nullptr,
-					dllPath, CLSID_XiaoKExplorerTap, nullptr);
+				hr = initialize(connection.c_str(), GetCurrentProcessId(),
+					xamlDiagnostics.empty() ? nullptr : xamlDiagnostics.c_str(),
+					dllPath.c_str(), CLSID_XiaoKExplorerTap, nullptr);
 			}).join();
 
 			if (SUCCEEDED(hr))
@@ -84,7 +134,9 @@ namespace
 				break;
 			}
 
-			if (attempt == 1 || attempt % 10 == 0)
+			// 前 5 次逐条记，之后每 10 次记一条。这个返回码是唯一能判断
+			// "是缺 XamlDiagnostics、还是 XAML 引擎没起来、还是接口对不上" 的依据。
+			if (attempt <= 5 || attempt % 10 == 0)
 			{
 				TapLog(L"[tap] 第 %d 次初始化失败: 0x%08X", attempt, static_cast<unsigned>(hr));
 			}
