@@ -341,6 +341,8 @@ namespace App1.Services.WallpaperSetter
         /// </summary>
         private async Task<string> DownloadImageAsync(string imageUrl, string title)
         {
+            var tempPath = string.Empty;
+
             try
             {
                 // 用稳定哈希做文件名：原来用 string.GetHashCode()，.NET 每个进程的
@@ -358,14 +360,33 @@ namespace App1.Services.WallpaperSetter
 
                 System.Diagnostics.Debug.WriteLine($"[壁纸设置] 开始下载图片...");
                 System.Diagnostics.Debug.WriteLine($"[壁纸设置] 图片URL: {imageUrl}");
-                
-                // 下载图片
-                var imageBytes = await _httpClient.GetByteArrayAsync(imageUrl);
-                await File.WriteAllBytesAsync(localPath, imageBytes);
-                
-                System.Diagnostics.Debug.WriteLine($"[壁纸设置] 图片下载完成: {imageBytes.Length / 1024} KB");
+
+                // 直接流到磁盘，不在内存里攒整张图。
+                // 原来用 GetByteArrayAsync：4K 原图动辄十几 MB，MemoryStream 按倍增法
+                // 先要一块更大的缓冲，再 ToArray() 复制一遍，一次换壁纸托管堆能冲到 36MB
+                // （日志：[内存] 已回收(换壁纸后) 托管堆 36MB → 9MB），任务管理器跟着顶到 66MB。
+                // 改成 64KB 缓冲边下边写，托管堆峰值基本只剩这点缓冲。
+                tempPath = localPath + ".part";
+
+                using (var response = await _httpClient.GetAsync(imageUrl, HttpCompletionOption.ResponseHeadersRead))
+                {
+                    response.EnsureSuccessStatusCode();
+
+                    using var source = await response.Content.ReadAsStreamAsync();
+                    using var target = new FileStream(
+                        tempPath, FileMode.Create, FileAccess.Write, FileShare.None,
+                        bufferSize: 64 * 1024, useAsync: true);
+
+                    await source.CopyToAsync(target, 64 * 1024);
+                }
+
+                // 下载完整了才改名，避免半截文件被当成缓存命中
+                File.Move(tempPath, localPath, overwrite: true);
+                tempPath = string.Empty;
+
+                System.Diagnostics.Debug.WriteLine($"[壁纸设置] 图片下载完成: {new FileInfo(localPath).Length / 1024} KB");
                 System.Diagnostics.Debug.WriteLine($"[壁纸设置] 保存路径: {localPath}");
-                
+
                 return localPath;
             }
             catch (Exception ex)
@@ -373,6 +394,13 @@ namespace App1.Services.WallpaperSetter
                 System.Diagnostics.Debug.WriteLine($"[壁纸设置] 下载图片失败: {ex.Message}");
                 System.Diagnostics.Debug.WriteLine($"[壁纸设置] 异常堆栈: {ex.StackTrace}");
                 return string.Empty;
+            }
+            finally
+            {
+                if (!string.IsNullOrEmpty(tempPath))
+                {
+                    try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+                }
             }
         }
 
