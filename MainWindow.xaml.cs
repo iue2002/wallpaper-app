@@ -830,10 +830,27 @@ namespace App1
                     }));
                 }
 
-                QueueSource("Dmoe壁纸", "dmoe", () => _dmoeApi.GetWallpapersAsync(8));
-                QueueSource("PAAA壁纸", "paaa", () => _paaaApi.GetWallpapersAsync(6));
+                // Dmoe / PAAA / Seovx 实测已失效，默认不排期：
+                // 它们不会抛异常（Paaa 返回 200 + 空体，Dmoe 只出 1080p 被规则拦），
+                // 所以熔断机制兜不住，每批都固定白等几秒，还占着宝贵的并发槽位。
+                // 代码保留，开关一改就能恢复。
+                if (App1.Config.AppConfig.EnableDmoe)
+                {
+                    QueueSource("Dmoe壁纸", "dmoe", () => _dmoeApi.GetWallpapersAsync(8));
+                }
+
+                if (App1.Config.AppConfig.EnablePaaa)
+                {
+                    QueueSource("PAAA壁纸", "paaa", () => _paaaApi.GetWallpapersAsync(6));
+                }
+
                 QueueSource("Upx8壁纸", "upx8", () => _upx8Api.GetWallpapersAsync(6));
-                QueueSource("Seovx壁纸", "seovx", () => _seovxApi.GetWallpapersAsync(6));
+
+                if (App1.Config.AppConfig.EnableSeovx)
+                {
+                    QueueSource("Seovx壁纸", "seovx", () => _seovxApi.GetWallpapersAsync(6));
+                }
+
                 QueueSource("Unsplash壁纸", "unsplash", () => _unsplashApi.GetRandomWallpapersAsync(6));
                 QueueSource("Commons壁纸", "commons", () => _commonsApi.GetWallpapersAsync(6));
                 QueueSource("Pixabay壁纸", "pixabay", () => _pixabayApi.GetWallpapersAsync(6));
@@ -1437,25 +1454,38 @@ namespace App1
                 // 其余源：每批只轮到 4 个（轮换），不再每批打满全部源。
                 // 每批其实只取 1 张，打满 8 个源等于用 8 次请求换 8 张图，
                 // 而用户一次只看一张，多出来的全是提前烧掉的带宽和内存。
-                var remainingSources = new (string Tag, string GateKey, Func<Task<List<Wallpaper>>> Fetch)[]
+                var remainingSources = new List<(string Tag, string GateKey, Func<Task<List<Wallpaper>>> Fetch)>
                 {
                     ("Unsplash", "unsplash", () => _unsplashApi.GetRandomWallpapersAsync(1)),
-                    ("Dmoe", "dmoe", () => _dmoeApi.GetWallpapersAsync(1)),
-                    ("PAAA", "paaa", () => _paaaApi.GetWallpapersAsync(1)),
                     ("Upx8", "upx8", () => _upx8Api.GetWallpapersAsync(1)),
-                    ("Seovx", "seovx", () => _seovxApi.GetWallpapersAsync(1)),
                     ("Commons", "commons", () => _commonsApi.GetWallpapersAsync(1)),
                     ("Pixabay", "pixabay", () => _pixabayApi.GetWallpapersAsync(1)),
                     ("Picsum", "picsum", () => _picsumApi.GetWallpapersAsync(1))
                 };
 
+                // 失效源默认不进轮换表 —— 放进来的话，每轮到它就是白等一次
+                if (App1.Config.AppConfig.EnableDmoe)
+                {
+                    remainingSources.Add(("Dmoe", "dmoe", () => _dmoeApi.GetWallpapersAsync(1)));
+                }
+
+                if (App1.Config.AppConfig.EnablePaaa)
+                {
+                    remainingSources.Add(("PAAA", "paaa", () => _paaaApi.GetWallpapersAsync(1)));
+                }
+
+                if (App1.Config.AppConfig.EnableSeovx)
+                {
+                    remainingSources.Add(("Seovx", "seovx", () => _seovxApi.GetWallpapersAsync(1)));
+                }
+
                 const int sourcesPerBatch = 4;
                 var batchSources = new List<(string Tag, string GateKey, Func<Task<List<Wallpaper>>> Fetch)>();
-                for (var i = 0; i < sourcesPerBatch && i < remainingSources.Length; i++)
+                for (var i = 0; i < sourcesPerBatch && i < remainingSources.Count; i++)
                 {
-                    batchSources.Add(remainingSources[(_immersiveSourceCursor + i) % remainingSources.Length]);
+                    batchSources.Add(remainingSources[(_immersiveSourceCursor + i) % remainingSources.Count]);
                 }
-                _immersiveSourceCursor = (_immersiveSourceCursor + sourcesPerBatch) % remainingSources.Length;
+                _immersiveSourceCursor = (_immersiveSourceCursor + sourcesPerBatch) % remainingSources.Count;
 
                 System.Diagnostics.Debug.WriteLine($"[沉浸式加载] 本批轮到的源: {string.Join(" / ", batchSources.Select(s => s.Tag))}");
 
@@ -1632,36 +1662,57 @@ namespace App1
         /// <summary>
         /// 从本地路径加载图片（Win10/Win11 通用）
         /// </summary>
-        private void LoadImageFromLocalPath(Microsoft.UI.Xaml.Controls.Image image, string localPath, string title)
+        /// <param name="decodePixelWidth">解码目标宽度，0 为原图。列表卡片传小值可省大量解码开销。</param>
+        private void LoadImageFromLocalPath(Microsoft.UI.Xaml.Controls.Image image, string localPath, string title, int decodePixelWidth = 0)
         {
             try
             {
                 var bitmap = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage();
+
+                if (decodePixelWidth > 0)
+                {
+                    bitmap.DecodePixelType = Microsoft.UI.Xaml.Media.Imaging.DecodePixelType.Physical;
+                    bitmap.DecodePixelWidth = decodePixelWidth;
+                }
+
                 bitmap.UriSource = new Uri($"file:///{localPath.Replace("\\", "/")}");
                 image.Source = bitmap;
-                System.Diagnostics.Debug.WriteLine($"[沉浸式图片] ✅ 从本地加载成功: {title}");
+                System.Diagnostics.Debug.WriteLine($"[图片] 本地加载成功: {title} (解码宽度 {decodePixelWidth})");
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[沉浸式图片] ❌ 本地加载失败: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[图片] 本地加载失败: {ex.Message}");
             }
         }
         
         /// <summary>
-        /// 尝试直接从 URL 加载图片（降级方案）
+        /// 尝试直接从 URL 加载图片
         /// </summary>
-        private void TryLoadImageFromUrl(Microsoft.UI.Xaml.Controls.Image image, string imageUrl, string title)
+        /// <param name="decodePixelWidth">
+        /// 解码目标宽度。0 表示按原图解码。
+        /// 列表卡片只有 280×200，如果按 2560×1440 原图解码，等于为了显示 5 万像素
+        /// 去解 368 万像素，解码和显存都是几十倍浪费 —— 首屏卡顿主要来自这里。
+        /// </param>
+        private void TryLoadImageFromUrl(Microsoft.UI.Xaml.Controls.Image image, string imageUrl, string title, int decodePixelWidth = 0)
         {
             try
             {
                 var bitmap = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage();
+
+                if (decodePixelWidth > 0)
+                {
+                    // 显式按物理像素解码，避免被系统 DPI 缩放再放大一次
+                    bitmap.DecodePixelType = Microsoft.UI.Xaml.Media.Imaging.DecodePixelType.Physical;
+                    bitmap.DecodePixelWidth = decodePixelWidth;
+                }
+
                 bitmap.UriSource = new Uri(imageUrl);
                 image.Source = bitmap;
-                System.Diagnostics.Debug.WriteLine($"[沉浸式图片] ⚠️ 降级到直接 URL 加载: {title}");
+                System.Diagnostics.Debug.WriteLine($"[图片] 已挂载: {title} (解码宽度 {decodePixelWidth})");
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[沉浸式图片] ❌ URL 加载也失败: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[图片] URL 加载失败: {ex.Message}");
             }
         }
         
@@ -1680,9 +1731,9 @@ namespace App1
                     System.IO.Directory.CreateDirectory(cacheFolder);
                 }
                 
-                // 使用 URL 哈希作为文件名
-                var urlHash = Math.Abs(imageUrl.GetHashCode()).ToString();
-                var fileName = $"wallpaper_{urlHash}.jpg";
+                // 稳定哈希做文件名，跨进程一致 —— 和 WallpaperService 用的是同一套规则，
+                // 列表里下过的图，点「设为壁纸」时能直接命中，不用再下一次。
+                var fileName = App1.Services.Imaging.ImageCachePeek.BuildFileName("wallpaper", imageUrl);
                 var localPath = System.IO.Path.Combine(cacheFolder, fileName);
                 
                 // 如果已存在，直接返回
@@ -1691,15 +1742,8 @@ namespace App1
                     return localPath;
                 }
                 
-                // 下载图片
-                using var httpClient = new System.Net.Http.HttpClient(new System.Net.Http.HttpClientHandler
-                {
-                    UseProxy = false,
-                    Proxy = null
-                })
-                {
-                    Timeout = TimeSpan.FromSeconds(30)
-                };
+                // 下载图片（共享连接池，不再每次重新握手）
+                var httpClient = App1.Services.Network.HttpClientProvider.Images;
                 
                 var imageBytes = await httpClient.GetByteArrayAsync(imageUrl);
                 await System.IO.File.WriteAllBytesAsync(localPath, imageBytes);
@@ -1727,17 +1771,17 @@ namespace App1
                 {
                     var imageUrl = wallpaper.ThumbUrl;  // 多图模式使用缩略图
                     
-                    // Win11: 直接加载 HTTPS URL
+                    // Win11: 直接加载 HTTPS URL（按卡片尺寸解码，不按原图）
                     if (_isWindows11)
                     {
-                        TryLoadImageFromUrl(image, imageUrl, wallpaper.Title);
+                        TryLoadImageFromUrl(image, imageUrl, wallpaper.Title, App1.Config.AppConfig.ThumbnailWidth);
                     }
                     // Win10: 下载到本地再加载
                     else
                     {
                         if (!string.IsNullOrEmpty(wallpaper.LocalPath) && System.IO.File.Exists(wallpaper.LocalPath))
                         {
-                            LoadImageFromLocalPath(image, wallpaper.LocalPath, wallpaper.Title);
+                            LoadImageFromLocalPath(image, wallpaper.LocalPath, wallpaper.Title, App1.Config.AppConfig.ThumbnailWidth);
                         }
                         else
                         {
@@ -1746,7 +1790,7 @@ namespace App1
                             if (!string.IsNullOrEmpty(localPath) && System.IO.File.Exists(localPath))
                             {
                                 wallpaper.LocalPath = localPath;
-                                LoadImageFromLocalPath(image, localPath, wallpaper.Title);
+                                LoadImageFromLocalPath(image, localPath, wallpaper.Title, App1.Config.AppConfig.ThumbnailWidth);
                             }
                         }
                     }
@@ -2639,14 +2683,7 @@ namespace App1
                 return savePath;
             }
 
-            using var httpClient = new System.Net.Http.HttpClient(new System.Net.Http.HttpClientHandler
-            {
-                UseProxy = false,
-                Proxy = null
-            })
-            {
-                Timeout = TimeSpan.FromSeconds(30)
-            };
+            var httpClient = App1.Services.Network.HttpClientProvider.Images;
 
             var imageBytes = await httpClient.GetByteArrayAsync(imageUrl);
             await System.IO.File.WriteAllBytesAsync(savePath, imageBytes);

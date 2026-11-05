@@ -317,9 +317,10 @@ namespace App1.Services.WallpaperSetter
         {
             try
             {
-                // 使用URL的哈希作为文件名
-                var urlHash = Math.Abs(imageUrl.GetHashCode()).ToString();
-                var fileName = $"wallpaper_{urlHash}.jpg";
+                // 用稳定哈希做文件名：原来用 string.GetHashCode()，.NET 每个进程的
+                // 哈希种子都不同，重启后算出来的名字和上次不一样，缓存永远命中不了，
+                // 结果每设一张壁纸就重下一张 4MB 图，磁盘还越堆越大。
+                var fileName = App1.Services.Imaging.ImageCachePeek.BuildFileName("wallpaper", imageUrl);
                 var localPath = Path.GetFullPath(Path.Combine(_wallpaperFolder, fileName));  // 确保是绝对路径
 
                 // 检查是否已经缓存

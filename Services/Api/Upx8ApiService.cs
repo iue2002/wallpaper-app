@@ -91,7 +91,7 @@ namespace App1.Services.Api
                             {
                                 System.Diagnostics.Debug.WriteLine($"[Upx8 API] 直接返回图片，使用URL: {directImageUrl}");
                                 var resolution = await GetImageResolutionAsync(directImageUrl);
-                                await TryAddWallpaperAsync(wallpapers, directImageUrl, resolution.Width, resolution.Height);
+                                AddWallpaperIfAcceptable(wallpapers, directImageUrl, resolution.Width, resolution.Height);
                             }
                             continue;
                         }
@@ -110,7 +110,7 @@ namespace App1.Services.Api
                             {
                                 System.Diagnostics.Debug.WriteLine($"[Upx8 API] JSON解析失败，降级为图片URL: {directImageUrl}");
                                 var resolution = await GetImageResolutionAsync(directImageUrl);
-                                await TryAddWallpaperAsync(wallpapers, directImageUrl, resolution.Width, resolution.Height);
+                                AddWallpaperIfAcceptable(wallpapers, directImageUrl, resolution.Width, resolution.Height);
                             }
                             else
                             {
@@ -132,7 +132,7 @@ namespace App1.Services.Api
 
                             if (!string.IsNullOrEmpty(imgUrl))
                             {
-                                await TryAddWallpaperAsync(wallpapers, imgUrl, width, height);
+                                AddWallpaperIfAcceptable(wallpapers, imgUrl, width, height);
                             }
                         }
                         else
@@ -165,8 +165,7 @@ namespace App1.Services.Api
             try
             {
                 // 使用URL的哈希作为文件名
-                var urlHash = Math.Abs(imageUrl.GetHashCode()).ToString();
-                var fileName = $"upx8_{urlHash}.jpg";
+                var fileName = App1.Services.Imaging.ImageCachePeek.BuildFileName("upx8", imageUrl);
                 var localPath = Path.Combine(_cacheFolder, fileName);
 
                 // 检查是否已经缓存
@@ -210,7 +209,7 @@ namespace App1.Services.Api
         /// <summary>
         /// 检查分辨率并添加壁纸（保留2K过滤机制）
         /// </summary>
-        private async Task TryAddWallpaperAsync(List<Wallpaper> wallpapers, string imageUrl, int width, int height)
+        private void AddWallpaperIfAcceptable(List<Wallpaper> wallpapers, string imageUrl, int width, int height)
         {
             if (!WallpaperQualityRule.IsAcceptable(width, height))
             {
@@ -218,7 +217,9 @@ namespace App1.Services.Api
                 return;
             }
 
-            var localPath = await DownloadAndCacheImageAsync(imageUrl);
+            // 只复用已有缓存，不在列表阶段下整图 ——
+            // 卡片只要缩略图，原图等用户点「设为壁纸」时再下
+            var localPath = App1.Services.Imaging.ImageCachePeek.FindExisting(_cacheFolder, "upx8", imageUrl);
 
             var wallpaper = new Wallpaper
             {

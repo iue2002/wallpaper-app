@@ -101,8 +101,9 @@ namespace App1.Services.Api
                                 continue;
                             }
 
-                            // 尺寸达标后才下载并缓存
-                            var localPath = await DownloadAndCacheImageAsync(imgUrl);
+                            // 只复用已有缓存，不在列表阶段下整图 ——
+                            // 卡片只要缩略图，原图等用户点「设为壁纸」时再下
+                            var localPath = App1.Services.Imaging.ImageCachePeek.FindExisting(_cacheFolder, "paaa", imgUrl);
 
                             var wallpaper = new Wallpaper
                             {
@@ -150,8 +151,7 @@ namespace App1.Services.Api
             try
             {
                 // 使用URL的哈希作为文件名
-                var urlHash = Math.Abs(imageUrl.GetHashCode()).ToString();
-                var fileName = $"paaa_{urlHash}.jpg";
+                var fileName = App1.Services.Imaging.ImageCachePeek.BuildFileName("paaa", imageUrl);
                 var localPath = Path.Combine(_cacheFolder, fileName);
 
                 // 检查是否已经缓存
