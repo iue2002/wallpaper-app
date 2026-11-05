@@ -42,6 +42,13 @@ namespace App1
         private TrayManager? _trayManager; // 托盘管理器
         private TaskbarBlurServiceV2? _taskbarBlurService; // 任务栏透明服务
 
+        /// <summary>
+        /// 换壁纸串行闸门。连点卡片、双击加右键同时触发时，
+        /// 多个设置流程叠在一起会让遮罩状态错乱（第一个请求就把遮罩收了，
+        /// 后面的还在跑），看着就像点了没反应。
+        /// </summary>
+        private readonly System.Threading.SemaphoreSlim _wallpaperSetGate = new(1, 1);
+
         /// <summary>单击卡片的待执行任务，双击时用它取消掉预览</summary>
         private System.Threading.CancellationTokenSource? _cardTapCts;
 
@@ -504,7 +511,10 @@ namespace App1
                 else if ((today - lastCleanupDate.Value.Date).TotalDays >= 1)
                 {
                     System.Diagnostics.Debug.WriteLine("[每日清理] 开始执行自动清理（删除旧壁纸文件）...");
-                    _wallpaperService.CleanupAllWallpapers();
+
+                    // 删文件是纯 IO，别放在 UI 线程上：目录里攒了几百张时
+                    // 同步删完界面会明显停顿一下
+                    _ = System.Threading.Tasks.Task.Run(() => _wallpaperService.CleanupAllWallpapers());
                     
                     // 记录清理时间
                     System.IO.File.WriteAllText(settingsFile, today.ToString("yyyy-MM-dd"));
@@ -978,6 +988,7 @@ namespace App1
         /// </summary>
         private async System.Threading.Tasks.Task SetWallpaperAsync(Wallpaper wallpaper)
         {
+            await _wallpaperSetGate.WaitAsync();
             try
             {
                 // 显示全屏进度提示
@@ -994,9 +1005,6 @@ namespace App1
                     wallpaper.LocalPath  // 传入可能已存在的本地路径
                 );
                 
-                // 隐藏进度提示
-                SettingWallpaperPanel.Visibility = Visibility.Collapsed;
-                
                 if (success)
                 {
                     // 显示成功通知（左下角）
@@ -1010,13 +1018,17 @@ namespace App1
             }
             catch (Exception ex)
             {
-                // 隐藏进度提示
-                SettingWallpaperPanel.Visibility = Visibility.Collapsed;
-                
                 System.Diagnostics.Debug.WriteLine($"设置壁纸失败: {ex.Message}");
                 
                 // 显示错误通知
                 ShowToast("壁纸设置失败", isSuccess: false);
+            }
+            finally
+            {
+                // 无论成功失败，遮罩都要收掉，闸门也必须放开，
+                // 否则一次异常就会让后续的换壁纸请求再也进不来
+                SettingWallpaperPanel.Visibility = Visibility.Collapsed;
+                _wallpaperSetGate.Release();
             }
         }
         

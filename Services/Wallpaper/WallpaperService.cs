@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace App1.Services.WallpaperSetter
@@ -89,9 +90,21 @@ namespace App1.Services.WallpaperSetter
         private const int SPI_SETDESKWALLPAPER = 0x0014;
         private const int SPIF_UPDATEINIFILE = 0x01;
         private const int SPIF_SENDCHANGE = 0x02;
+        private const uint SMTO_BLOCK = 0x0001;
+
+        /// <summary>
+        /// 广播设置变更时的等待上限。这个调用要等系统里每一个顶层窗口应答，
+        /// 给太长等于把命交给别人 —— 只要有一个窗口卡住，这边就跟着卡。
+        /// </summary>
+        private const uint RefreshTimeoutMs = 1000;
 
         private readonly HttpClient _httpClient;
         private readonly string _wallpaperFolder;
+        /// <summary>
+        /// 换壁纸串行化。COM 的 IDesktopWallpaper 与 SystemParametersInfo 都会去动
+        /// Explorer，快速连点多张时并发调用容易把 Explorer 拖成无响应，界面就假死了。
+        /// </summary>
+        private readonly SemaphoreSlim _applyLock = new(1, 1);
 
         public WallpaperService()
         {
@@ -127,13 +140,10 @@ namespace App1.Services.WallpaperSetter
             try
             {
                 System.Diagnostics.Debug.WriteLine($"[壁纸设置] 开始设置壁纸: {title}");
-                
-                // 1. 清理旧壁纸文件（保留最近3个，节省空间）
-                CleanupOldWallpapers(3);
-                
+
                 string localPath;
                 
-                // 2. 优先使用已缓存的本地图片
+                // 1. 优先使用已缓存的本地图片
                 if (!string.IsNullOrEmpty(localCachePath) && File.Exists(localCachePath))
                 {
                     localPath = localCachePath;
@@ -141,7 +151,7 @@ namespace App1.Services.WallpaperSetter
                 }
                 else
                 {
-                    // 3. 如果没有缓存，则下载图片
+                    // 2. 如果没有缓存，则下载图片
                     localPath = await DownloadImageAsync(imageUrl, title);
                     if (string.IsNullOrEmpty(localPath))
                     {
@@ -161,58 +171,44 @@ namespace App1.Services.WallpaperSetter
                 var fileInfo = new FileInfo(localPath);
                 System.Diagnostics.Debug.WriteLine($"[壁纸设置] 文件大小: {fileInfo.Length / 1024} KB");
 
-                // 4. 使用IDesktopWallpaper COM接口设置壁纸（Windows 8+推荐方式）
-                // 确保路径格式正确（使用反斜杠，并且是完整路径）
+                // 4. 规范成完整路径（反斜杠格式），系统接口对路径写法比较挑
                 var normalizedPath = Path.GetFullPath(localPath).Replace("/", "\\");
                 System.Diagnostics.Debug.WriteLine($"[壁纸设置] 规范化路径: {normalizedPath}");
                 System.Diagnostics.Debug.WriteLine($"[壁纸设置] 文件存在检查: {File.Exists(normalizedPath)}");
                 
-                bool comSuccess = false;
-                
-                // 尝试使用 COM 接口
-                try
+                // 真正的落地动作（COM / SystemParametersInfo / 注册表）全部丢到后台线程。
+                // 这几个 API 都是同步阻塞的：SystemParametersInfo 带 SPIF_SENDCHANGE 时会
+                // 向系统里所有顶层窗口广播一次并逐个等待应答，Explorer 稍一卡顿，
+                // 界面就跟着一起假死 —— 这正是"换壁纸时直接卡死"的来源。
+                var applied = false;
+
+                // 串行执行，并给等待设上限。上一个请求万一卡在系统调用里，
+                // 也不能让后面的请求无限期干等。
+                if (await _applyLock.WaitAsync(TimeSpan.FromSeconds(8)))
                 {
-                    System.Diagnostics.Debug.WriteLine("[壁纸设置] 尝试使用 COM 接口（IDesktopWallpaper）...");
-                    var wallpaper = (IDesktopWallpaper)new DesktopWallpaperClass();
-                    
-                    // 先设置壁纸样式为填充（Fill）
-                    wallpaper.SetPosition(DesktopWallpaperPosition.Fill);
-                    System.Diagnostics.Debug.WriteLine("[壁纸设置] ✅ 壁纸样式设置为填充模式");
-                    
-                    // 设置壁纸（null表示所有显示器）
-                    wallpaper.SetWallpaper(null!, normalizedPath);
-                    System.Diagnostics.Debug.WriteLine("[壁纸设置] ✅ COM 接口调用成功");
-                    
-                    // 释放COM对象
-                    Marshal.ReleaseComObject(wallpaper);
-                    
-                    comSuccess = true;
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[壁纸设置] ❌ COM 接口失败: {ex.GetType().Name}");
-                    System.Diagnostics.Debug.WriteLine($"[壁纸设置] 错误消息: {ex.Message}");
-                    System.Diagnostics.Debug.WriteLine($"[壁纸设置] HRESULT: 0x{Marshal.GetHRForException(ex):X8}");
-                    comSuccess = false;
-                }
-                
-                // 无论 COM 是否成功，都使用备用方法加强（Win10 兼容性）
-                if (!comSuccess)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[壁纸设置] 使用备用方法...");
+                    try
+                    {
+                        applied = await RunOnStaThreadAsync(() => ApplyWallpaperCore(normalizedPath));
+                    }
+                    finally
+                    {
+                        _applyLock.Release();
+                    }
                 }
                 else
                 {
-                    System.Diagnostics.Debug.WriteLine($"[壁纸设置] COM 成功，使用备用方法加强设置...");
+                    System.Diagnostics.Debug.WriteLine("[壁纸设置] ⚠️ 上一个设置请求还没结束，放弃本次");
+                    return false;
                 }
-                
-                SetWallpaperFallback(normalizedPath);
-                
-                // 等待系统应用更改
-                await Task.Delay(1500);
 
-                System.Diagnostics.Debug.WriteLine("[壁纸设置] ✅ 壁纸设置成功");
-                return true;
+                // 旧缓存清理放后台慢慢做，别挡着返回；排除掉正在使用的这一张
+                _ = Task.Run(() => CleanupOldWallpapers(30, normalizedPath));
+
+                System.Diagnostics.Debug.WriteLine(applied
+                    ? "[壁纸设置] ✅ 壁纸设置成功"
+                    : "[壁纸设置] ⚠️ 壁纸设置未确认成功");
+
+                return applied;
             }
             catch (Exception ex)
             {
@@ -222,53 +218,72 @@ namespace App1.Services.WallpaperSetter
         }
 
         /// <summary>
-        /// 刷新Explorer进程，强制应用壁纸更改
+        /// 广播系统设置变更。
+        /// 注意：这个调用会同步等待系统里每一个顶层窗口应答，只能在后台线程调用，
+        /// 而且超时要给得很短，否则一个挂起的窗口就能拖住整个界面。
         /// </summary>
         private void RefreshExplorer()
         {
+            var lParam = IntPtr.Zero;
             try
             {
-                // 广播设置更改消息给所有窗口
-                IntPtr result;
+                // 参数是"什么变了"的名字，壁纸对应 SPI_SETDESKWALLPAPER。
+                // 原来传的是 "Environment"（环境变量变更），跟壁纸毫无关系，
+                // 等于每次换壁纸都白广播一趟。
+                lParam = Marshal.StringToHGlobalUni("SPI_SETDESKWALLPAPER");
+
                 SendMessageTimeout(
-                    new IntPtr(HWND_BROADCAST), 
-                    WM_SETTINGCHANGE, 
-                    IntPtr.Zero, 
-                    Marshal.StringToHGlobalUni("Environment"),
-                    SMTO_ABORTIFHUNG, 
-                    5000, 
-                    out result
-                );
-                
-                System.Diagnostics.Debug.WriteLine("[壁纸设置] 已刷新Explorer");
+                    new IntPtr(HWND_BROADCAST),
+                    WM_SETTINGCHANGE,
+                    IntPtr.Zero,
+                    lParam,
+                    SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                    RefreshTimeoutMs,
+                    out _);
+
+                System.Diagnostics.Debug.WriteLine("[壁纸设置] 已广播设置变更");
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[壁纸设置] 刷新Explorer失败: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[壁纸设置] 广播失败: {ex.Message}");
+            }
+            finally
+            {
+                // 原来这块非托管内存从不释放，每换一次壁纸漏一块
+                if (lParam != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(lParam);
+                }
             }
         }
         
         /// <summary>
         /// 备用方法：使用注册表 + SystemParametersInfo 设置壁纸
         /// </summary>
-        private void SetWallpaperFallback(string imagePath)
+        /// <summary>
+        /// 备用方法：使用注册表 + SystemParametersInfo 设置壁纸。
+        /// 全程同步阻塞，只允许在后台线程调用。
+        /// </summary>
+        private bool SetWallpaperFallback(string imagePath)
         {
+            var spiSuccess = false;
+
             try
             {
                 System.Diagnostics.Debug.WriteLine("[壁纸设置] 使用备用方法（SystemParametersInfo + 注册表）");
-                
+
                 // 方法1: SystemParametersInfo（最可靠）
                 try
                 {
-                    int result = SystemParametersInfo(
+                    var result = SystemParametersInfo(
                         SPI_SETDESKWALLPAPER,
                         0,
                         imagePath,
-                        SPIF_UPDATEINIFILE | SPIF_SENDCHANGE
-                    );
-                    
+                        SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+
                     if (result != 0)
                     {
+                        spiSuccess = true;
                         System.Diagnostics.Debug.WriteLine("[壁纸设置] ✅ SystemParametersInfo 设置成功");
                     }
                     else
@@ -280,7 +295,7 @@ namespace App1.Services.WallpaperSetter
                 {
                     System.Diagnostics.Debug.WriteLine($"[壁纸设置] ❌ SystemParametersInfo 异常: {ex.Message}");
                 }
-                
+
                 // 方法2: 注册表（补充）
                 try
                 {
@@ -300,14 +315,20 @@ namespace App1.Services.WallpaperSetter
                 {
                     System.Diagnostics.Debug.WriteLine($"[壁纸设置] ⚠️ 注册表更新失败: {ex.Message}");
                 }
-                
-                // 强制刷新
-                RefreshExplorer();
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[壁纸设置] ❌ 备用方法失败: {ex.Message}");
             }
+
+            // SPIF_SENDCHANGE 本身已经让系统通知各窗口了，正常情况不必再广播一遍。
+            // 只有 SPI 明确失败时才补一次兜底。
+            if (!spiSuccess)
+            {
+                RefreshExplorer();
+            }
+
+            return spiSuccess;
         }
 
         /// <summary>
@@ -353,14 +374,27 @@ namespace App1.Services.WallpaperSetter
         /// <summary>
         /// 清理旧的壁纸文件（保留最近N个）
         /// </summary>
-        public void CleanupOldWallpapers(int keepCount = 30)
+        /// <summary>
+        /// 清理旧的壁纸文件（保留最近N个）
+        /// </summary>
+        /// <param name="keepCount">保留数量</param>
+        /// <param name="excludePath">不参与清理的文件（正在使用的壁纸）</param>
+        public void CleanupOldWallpapers(int keepCount = 30, string? excludePath = null)
         {
             try
             {
+                string? excludeFull = null;
+                if (!string.IsNullOrEmpty(excludePath))
+                {
+                    try { excludeFull = Path.GetFullPath(excludePath); } catch { }
+                }
+
                 var jpgFiles = Directory.GetFiles(_wallpaperFolder, "*.jpg");
                 var bmpFiles = Directory.GetFiles(_wallpaperFolder, "*.bmp");
-                
+
                 var allFiles = jpgFiles.Concat(bmpFiles)
+                    .Where(f => excludeFull == null
+                                || !string.Equals(Path.GetFullPath(f), excludeFull, StringComparison.OrdinalIgnoreCase))
                     .Select(f => new FileInfo(f))
                     .OrderByDescending(f => f.CreationTime)
                     .ToArray();
@@ -368,9 +402,17 @@ namespace App1.Services.WallpaperSetter
                 // 保留最近N个文件，删除其他
                 if (allFiles.Length > keepCount)
                 {
-                    for (int i = keepCount; i < allFiles.Length; i++)
+                    for (var i = keepCount; i < allFiles.Length; i++)
                     {
-                        allFiles[i].Delete();
+                        try
+                        {
+                            allFiles[i].Delete();
+                        }
+                        catch (Exception ex)
+                        {
+                            // 文件可能正被系统占用，跳过就好，不必让整个清理失败
+                            System.Diagnostics.Debug.WriteLine($"[壁纸设置] 跳过占用中的文件: {allFiles[i].Name} | {ex.Message}");
+                        }
                     }
                     System.Diagnostics.Debug.WriteLine($"[壁纸设置] 清理了 {allFiles.Length - keepCount} 个旧壁纸文件");
                 }
@@ -523,8 +565,9 @@ namespace App1.Services.WallpaperSetter
                     }
                 }
                 
-                // 刷新系统设置
-                RefreshExplorer();
+                // 刷新系统设置。这个调用要等系统里所有顶层窗口应答，
+                // 丢到后台去发，别让界面陪着一起等
+                _ = Task.Run(RefreshExplorer);
                 
                 System.Diagnostics.Debug.WriteLine($"[锁屏设置] ✅ 备用方法设置成功");
                 return true;
@@ -535,5 +578,88 @@ namespace App1.Services.WallpaperSetter
                 return false;
             }
         }
+
+        /// <summary>
+        /// 在独立 STA 线程上执行一段同步代码。
+        /// IDesktopWallpaper 是 COM 组件，单独给它一个单元可以避开和 UI 线程的
+        /// 单元模型纠缠；同时保证这些阻塞式系统调用绝不会落在 UI 线程上。
+        /// </summary>
+        private static Task<T> RunOnStaThreadAsync<T>(Func<T> func)
+        {
+            var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var thread = new Thread(() =>
+            {
+                try
+                {
+                    tcs.TrySetResult(func());
+                }
+                catch (Exception ex)
+                {
+                    tcs.TrySetException(ex);
+                }
+            })
+            {
+                IsBackground = true,
+                Name = "WallpaperApply"
+            };
+
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.Start();
+
+            return tcs.Task;
+        }
+
+        /// <summary>
+        /// 真正把图片设为壁纸。COM 与 Win32 都是同步阻塞调用，
+        /// 只能由后台线程执行，绝不能碰 UI 线程。
+        /// </summary>
+        private bool ApplyWallpaperCore(string normalizedPath)
+        {
+            var comSuccess = false;
+
+            try
+            {
+                System.Diagnostics.Debug.WriteLine("[壁纸设置] 尝试使用 COM 接口（IDesktopWallpaper）...");
+                var wallpaper = (IDesktopWallpaper)new DesktopWallpaperClass();
+
+                try
+                {
+                    // 先设置壁纸样式为填充（Fill）
+                    wallpaper.SetPosition(DesktopWallpaperPosition.Fill);
+
+                    // 设置壁纸（null 表示所有显示器）
+                    wallpaper.SetWallpaper(null!, normalizedPath);
+                    comSuccess = true;
+                    System.Diagnostics.Debug.WriteLine("[壁纸设置] ✅ COM 接口调用成功");
+                }
+                finally
+                {
+                    // 原来只在成功路径上释放，异常时每失败一次就漏一个 COM 引用
+                    if (Marshal.IsComObject(wallpaper))
+                    {
+                        Marshal.ReleaseComObject(wallpaper);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[壁纸设置] ❌ COM 接口失败: {ex.GetType().Name} / {ex.Message}");
+                try
+                {
+                    System.Diagnostics.Debug.WriteLine($"[壁纸设置] HRESULT: 0x{Marshal.GetHRForException(ex):X8}");
+                }
+                catch
+                {
+                    // 部分异常拿不到 HRESULT，忽略
+                }
+            }
+
+            // 无论 COM 成败都补一次 SPI：老版本 Windows 上 COM 有时不生效
+            var fallbackSuccess = SetWallpaperFallback(normalizedPath);
+
+            return comSuccess || fallbackSuccess;
+        }
+
     }
 }
