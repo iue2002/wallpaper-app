@@ -2337,7 +2337,12 @@ namespace App1
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[开机启动] 切换失败: {ex.Message}");
-                ShowToast("开机启动设置失败", isSuccess: false);
+
+                // StartupRegistrar 抛的都是给用户看的说明（比如打包版被系统禁用，
+                // 需要去「设置 → 应用 → 启动」手动开），直接显示比"设置失败"有用。
+                ShowToast(
+                    ex is InvalidOperationException ? ex.Message : "开机启动设置失败",
+                    isSuccess: false);
             }
         }
 

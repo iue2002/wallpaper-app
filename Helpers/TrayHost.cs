@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using Windows.ApplicationModel;
 
 namespace App1.Helpers
 {
@@ -286,9 +287,18 @@ namespace App1.Helpers
                         break;
 
                     case ID_STARTUP:
-                        var nowEnabled = StartupRegistrar.Toggle();
-                        StartupToggled?.Invoke(nowEnabled);
-                        ShowNotification("小K壁纸", nowEnabled ? "已开启开机启动" : "已关闭开机启动");
+                        try
+                        {
+                            var nowEnabled = StartupRegistrar.Toggle();
+                            StartupToggled?.Invoke(nowEnabled);
+                            ShowNotification("小K壁纸", nowEnabled ? "已开启开机启动" : "已关闭开机启动");
+                        }
+                        catch (Exception ex)
+                        {
+                            // 打包版被用户在系统里关过时会走到这里，直接把原因说清楚，
+                            // 不要让用户以为点了没反应。
+                            ShowNotification("小K壁纸", ex.Message);
+                        }
                         break;
 
                     case ID_EXIT:
@@ -453,8 +463,17 @@ namespace App1.Helpers
     }
 
     /// <summary>
-    /// 开机启动项的注册表读写。放在这里是因为托盘菜单和主窗口都要用，
-    /// 而且两边必须以注册表为准 —— 免得一边勾了、另一边的设置文件还写着关闭。
+    /// 开机启动项的读写。放在这里是因为托盘菜单和主窗口都要用，
+    /// 而且两边必须以系统里的真实状态为准 —— 免得一边勾了、另一边的设置文件还写着关闭。
+    ///
+    /// 两条路径，跟微软文档给打包/非打包应用的建议一致：
+    ///   - MSIX 打包版：走 Package.appxmanifest 里声明的 uap5:StartupTask（TaskId=WallpaperAutoStartup），
+    ///     用 Windows.ApplicationModel.StartupTask 打开/关闭。这是系统承认的启动项，
+    ///     在「设置 → 应用 → 启动」和任务管理器里可见、可被用户单独禁用。
+    ///     不能写注册表：打包版的 exe 在 C:\Program Files\WindowsApps\小K壁纸_2.1.0.0_x64__… 下，
+    ///     路径带版本号，应用一更新目录就变，写死的 Run 值会失效。
+    ///   - 非打包版（开发运行、或者从解压目录直接跑）：没有包标识，用不了 StartupTask，
+    ///     只能写 HKCU\...\Run，带上 /background 参数让进程知道这次不要弹窗口。
     /// </summary>
     public static class StartupRegistrar
     {
@@ -464,37 +483,114 @@ namespace App1.Helpers
         /// <summary>开机启动时带的参数：只要托盘和自动换壁纸，不要弹主窗口。</summary>
         public const string BackgroundArgument = "/background";
 
+        /// <summary>必须和 Package.appxmanifest 里 uap5:StartupTask 的 TaskId 一字不差。</summary>
+        private const string PackagedTaskId = "WallpaperAutoStartup";
+
+        /// <summary>GetCurrentPackageFullName 在无包标识时返回的错误码。</summary>
+        private const int AppModelErrorNoPackage = 15700;
+
+        private static bool? _isPackaged;
+
+        /// <summary>当前进程是否以 MSIX 包身份运行。</summary>
+        public static bool IsPackaged
+        {
+            get
+            {
+                if (_isPackaged.HasValue)
+                {
+                    return _isPackaged.Value;
+                }
+
+                bool packaged;
+                try
+                {
+                    var length = 0;
+                    // 传 null 缓冲区只问长度：有包标识返回 ERROR_INSUFFICIENT_BUFFER(122)，
+                    // 没有则返回 APPMODEL_ERROR_NO_PACKAGE(15700)。比 try/catch 包 Package.Current 干净。
+                    packaged = GetCurrentPackageFullName(ref length, null) != AppModelErrorNoPackage;
+                }
+                catch
+                {
+                    packaged = false;
+                }
+
+                _isPackaged = packaged;
+                return packaged;
+            }
+        }
+
         public static bool IsEnabled()
         {
-            try
+            if (!IsPackaged)
             {
-                using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKeyPath, false);
-                return key?.GetValue(ValueName) is string value && value.Length > 0;
+                return IsRegistryEnabled();
             }
-            catch
-            {
-                return false;
-            }
+
+            var state = ReadStartupTaskState();
+            return state == StartupTaskState.Enabled || state == StartupTaskState.EnabledByPolicy;
         }
 
         public static void Enable()
         {
-            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKeyPath, true)
-                            ?? throw new InvalidOperationException("打不开开机启动注册表项");
-
-            var exePath = Environment.ProcessPath;
-            if (string.IsNullOrEmpty(exePath))
+            if (!IsPackaged)
             {
-                throw new InvalidOperationException("取不到程序路径");
+                EnableViaRegistry();
+                return;
             }
 
-            key.SetValue(ValueName, $"\"{exePath}\" {BackgroundArgument}");
+            var task = GetStartupTask();
+            switch (task.State)
+            {
+                case StartupTaskState.Enabled:
+                case StartupTaskState.EnabledByPolicy:
+                    return;
+
+                case StartupTaskState.DisabledByUser:
+                    // 用户在任务管理器/系统设置里关过。微软的规矩是应用无权自己改回去，
+                    // 只能把用户指到该去的地方。
+                    throw new InvalidOperationException(
+                        "开机启动已被系统关闭，请在「设置 → 应用 → 启动」里手动开启");
+
+                case StartupTaskState.DisabledByPolicy:
+                    throw new InvalidOperationException("开机启动被系统策略禁用，应用无法开启");
+            }
+
+            var result = task.RequestEnableAsync()
+                .AsTask()
+                .ConfigureAwait(false)
+                .GetAwaiter()
+                .GetResult();
+
+            if (result == StartupTaskState.Enabled || result == StartupTaskState.EnabledByPolicy)
+            {
+                return;
+            }
+
+            if (result == StartupTaskState.DisabledByUser)
+            {
+                throw new InvalidOperationException(
+                    "开机启动已被系统关闭，请在「设置 → 应用 → 启动」里手动开启");
+            }
+
+            throw new InvalidOperationException("系统未允许开启开机启动");
         }
 
         public static void Disable()
         {
-            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKeyPath, true);
-            key?.DeleteValue(ValueName, false);
+            if (!IsPackaged)
+            {
+                DisableViaRegistry();
+                return;
+            }
+
+            try
+            {
+                GetStartupTask().Disable();
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"关闭开机启动失败: {ex.Message}");
+            }
         }
 
         /// <summary>切换并返回切换后的状态。</summary>
@@ -509,5 +605,68 @@ namespace App1.Helpers
             Enable();
             return true;
         }
+
+        // ===== 打包版：StartupTask =====
+
+        private static Windows.ApplicationModel.StartupTask GetStartupTask()
+        {
+            return Windows.ApplicationModel.StartupTask
+                .GetAsync(PackagedTaskId)
+                .AsTask()
+                .ConfigureAwait(false)
+                .GetAwaiter()
+                .GetResult();
+        }
+
+        private static StartupTaskState ReadStartupTaskState()
+        {
+            try
+            {
+                return GetStartupTask().State;
+            }
+            catch (Exception ex)
+            {
+                App1.Services.Diagnostics.AppLog.Write($"[开机启动] 读取 StartupTask 失败: {ex.Message}");
+                return StartupTaskState.Disabled;
+            }
+        }
+
+        // ===== 非打包版：注册表 =====
+
+        private static bool IsRegistryEnabled()
+        {
+            try
+            {
+                using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKeyPath, false);
+                return key?.GetValue(ValueName) is string value && value.Length > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void EnableViaRegistry()
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKeyPath, true)
+                            ?? throw new InvalidOperationException("打不开开机启动注册表项");
+
+            var exePath = Environment.ProcessPath;
+            if (string.IsNullOrEmpty(exePath))
+            {
+                throw new InvalidOperationException("取不到程序路径");
+            }
+
+            key.SetValue(ValueName, $"\"{exePath}\" {BackgroundArgument}");
+        }
+
+        private static void DisableViaRegistry()
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKeyPath, true);
+            key?.DeleteValue(ValueName, false);
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetCurrentPackageFullName(ref int packageFullNameLength, char[]? packageFullName);
     }
 }
