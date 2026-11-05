@@ -5,6 +5,8 @@ using System.IO;
 using System.Net.Http;
 using System.Threading.Tasks;
 using App1.Models;
+using App1.Services.Imaging;
+using App1.Services.Quality;
 using Windows.Graphics.Imaging;
 using Windows.Storage.Streams;
 
@@ -85,37 +87,36 @@ namespace App1.Services.Api
 
                         if (!string.IsNullOrEmpty(imgUrl))
                         {
-                            // 检查图片分辨率，只保留2k以上的壁纸
+                            // 先只读文件头取尺寸（约 64KB），不合格立刻放弃，不再下载整图
                             var resolution = await GetImageResolutionAsync(imgUrl);
-                            if (resolution.Width >= 2560 || resolution.Height >= 1440)
+                            if (!WallpaperQualityRule.IsAcceptable(resolution.Width, resolution.Height))
                             {
-                                // 下载并缓存图片
-                                var localPath = await DownloadAndCacheImageAsync(imgUrl);
-
-                                var wallpaper = new Wallpaper
-                                {
-                                    Id = Guid.NewGuid().ToString(),
-                                    Title = $"Seovx 壁纸 ({resolution.Width}x{resolution.Height})",
-                                    Copyright = "来源: Seovx",
-                                    Source = WallpaperSource.Seovx,
-                                    OriginalUrl = imgUrl,
-                                    FullUrl = imgUrl,
-                                    ThumbUrl = imgUrl, // 直接使用原图作为缩略图
-                                    LocalPath = localPath,
-                                    IsDownloaded = !string.IsNullOrEmpty(localPath),
-                                    AddedDate = DateTime.Now
-                                };
-
-                                wallpapers.Add(wallpaper);
-                                System.Diagnostics.Debug.WriteLine($"[Seovx API] 成功获取壁纸: {imgUrl} ({resolution.Width}x{resolution.Height})");
-                                if (!string.IsNullOrEmpty(localPath))
-                                {
-                                    System.Diagnostics.Debug.WriteLine($"[Seovx API] 图片已缓存到: {localPath}");
-                                }
+                                System.Diagnostics.Debug.WriteLine($"[Seovx API] 跳过不合格壁纸: {imgUrl} ({resolution.Width}x{resolution.Height})");
+                                continue;
                             }
-                            else
+
+                            // 尺寸达标后才下载并缓存
+                            var localPath = await DownloadAndCacheImageAsync(imgUrl);
+
+                            var wallpaper = new Wallpaper
                             {
-                                System.Diagnostics.Debug.WriteLine($"[Seovx API] 跳过低分辨率壁纸: {imgUrl} ({resolution.Width}x{resolution.Height})");
+                                Id = Guid.NewGuid().ToString(),
+                                Title = $"Seovx 壁纸 ({resolution.Width}x{resolution.Height})",
+                                Copyright = "来源: Seovx",
+                                Source = WallpaperSource.Seovx,
+                                OriginalUrl = imgUrl,
+                                FullUrl = imgUrl,
+                                ThumbUrl = imgUrl, // 直接使用原图作为缩略图
+                                LocalPath = localPath,
+                                IsDownloaded = !string.IsNullOrEmpty(localPath),
+                                AddedDate = DateTime.Now
+                            };
+
+                            wallpapers.Add(wallpaper);
+                            System.Diagnostics.Debug.WriteLine($"[Seovx API] 成功获取壁纸: {imgUrl} ({resolution.Width}x{resolution.Height})");
+                            if (!string.IsNullOrEmpty(localPath))
+                            {
+                                System.Diagnostics.Debug.WriteLine($"[Seovx API] 图片已缓存到: {localPath}");
                             }
                         }
                     }
@@ -177,19 +178,9 @@ namespace App1.Services.Api
         {
             try
             {
-                // 下载图片数据
-                var imageBytes = await _httpClient.GetByteArrayAsync(imageUrl);
-                
-                // 使用内存流读取图片
-                using (var stream = new MemoryStream(imageBytes))
-                {
-                    using (var randomAccessStream = stream.AsRandomAccessStream())
-                    {
-                        // 解码图片
-                        var decoder = await BitmapDecoder.CreateAsync(randomAccessStream);
-                        return new Size((int)decoder.PixelWidth, (int)decoder.PixelHeight);
-                    }
-                }
+                // 只读文件头（约 64KB）解析宽高，不再下载整张图片
+                var probe = await ImageProbe.GetSizeAsync(_httpClient, imageUrl);
+                return new Size(probe.Width, probe.Height);
             }
             catch (Exception ex)
             {

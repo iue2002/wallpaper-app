@@ -1,4 +1,5 @@
 using App1.Models;
+using App1.Services.Quality;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -119,17 +120,10 @@ namespace App1.Services.Api
                             continue;
                         }
 
-                        // 只保留横向图片
-                        if (width < height)
+                        // 统一质量规则：只留横图，宽>=2560 且 高>=1440
+                        if (!WallpaperQualityRule.IsAcceptable(width, height))
                         {
-                            System.Diagnostics.Debug.WriteLine($"[Unsplash API] 跳过竖向图片: {width}x{height}");
-                            continue;
-                        }
-
-                        // 统一2K过滤：至少满足2560x1440中的一个维度
-                        if (width < 2560 && height < 1440)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"[Unsplash API] 跳过低分辨率图片: {width}x{height}");
+                            System.Diagnostics.Debug.WriteLine($"[Unsplash API] 跳过不合格图片: {width}x{height}");
                             continue;
                         }
 
