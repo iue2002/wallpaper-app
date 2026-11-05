@@ -41,6 +41,12 @@ namespace App1
         private readonly WallpaperService _wallpaperService;
         private TrayManager? _trayManager; // 托盘管理器
         private TaskbarBlurServiceV2? _taskbarBlurService; // 任务栏透明服务
+
+        /// <summary>单击卡片的待执行任务，双击时用它取消掉预览</summary>
+        private System.Threading.CancellationTokenSource? _cardTapCts;
+
+        /// <summary>当前全屏预览的是哪一张，用于判断高清图回来时还该不该换上去</summary>
+        private Wallpaper? _fullScreenWallpaper;
         
         private readonly ObservableCollection<Wallpaper> _wallpapers = new();
         private bool _isLoadingMore = false;
@@ -954,6 +960,9 @@ namespace App1
         /// </summary>
         private async void WallpaperItem_DoubleTapped(object sender, Microsoft.UI.Xaml.Input.DoubleTappedRoutedEventArgs e)
         {
+            // 双击是「设为壁纸」，不该顺带弹预览 —— 把待执行的单击预览取消掉
+            _cardTapCts?.Cancel();
+
             // 从DataContext获取Wallpaper对象
             if (sender is FrameworkElement element && element.DataContext is Wallpaper wallpaper)
             {
@@ -2551,6 +2560,11 @@ namespace App1
             try
             {
                 FullScreenImageViewer.Visibility = Visibility.Collapsed;
+
+                // 主动断开引用。一张 4K 预览图解码后是几十 MB，
+                // 光靠控件隐藏不会释放，连着看十几张内存就上去了。
+                FullScreenImage.Source = null;
+                _fullScreenWallpaper = null;
             }
             catch (Exception ex)
             {
@@ -2726,14 +2740,173 @@ namespace App1
         /// </summary>
         private void WallpaperGridItem_Tapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
         {
+            if (sender is not FrameworkElement element || element.DataContext is not Wallpaper wallpaper)
+            {
+                return;
+            }
+
+            // 双击设置壁纸时，系统会先抛两次 Tapped。这里先等一小会儿再开预览，
+            // 如果期间发生了双击，就把这次单击吞掉 —— 否则双击会先闪一下预览再关掉。
+            _cardTapCts?.Cancel();
+            _cardTapCts = new System.Threading.CancellationTokenSource();
+            var token = _cardTapCts.Token;
+
+            _ = OpenPreviewAfterTapAsync(wallpaper, token);
+        }
+
+        private async Task OpenPreviewAfterTapAsync(Wallpaper wallpaper, System.Threading.CancellationToken token)
+        {
             try
             {
-                // 这里可以添加壁纸点击的逻辑
+                await Task.Delay(220, token);
+            }
+            catch (OperationCanceledException)
+            {
+                return;   // 双击了，不弹预览
+            }
+
+            if (token.IsCancellationRequested)
+            {
+                return;
+            }
+
+            ShowFullScreenImage(wallpaper);
+        }
+
+        /// <summary>
+        /// 单击卡片 → 全屏查看。先用已缓存的缩略图立刻铺满，再后台换成高清，
+        /// 这样点下去马上有画面，不用对着空白等几秒。
+        /// </summary>
+        private void ShowFullScreenImage(Wallpaper wallpaper)
+        {
+            try
+            {
+                _fullScreenWallpaper = wallpaper;
+
+                FullScreenTitle.Text = wallpaper.Title;
+                FullScreenCopyright.Text = wallpaper.Copyright;
+                FullScreenImage.Source = null;
+                FullScreenImageViewer.Visibility = Visibility.Visible;
+
+                if (!string.IsNullOrEmpty(wallpaper.ThumbUrl))
+                {
+                    FullScreenImage.Source = CreateBitmap(wallpaper.ThumbUrl, 0);
+                }
+
+                var hiResUrl = !string.IsNullOrEmpty(wallpaper.FullUrl) ? wallpaper.FullUrl : wallpaper.ThumbUrl;
+
+                // Upx8 这类源的缩略图就是原图，不用再加载一遍
+                if (!string.IsNullOrEmpty(hiResUrl) && hiResUrl != wallpaper.ThumbUrl)
+                {
+                    _ = UpgradeFullScreenImageAsync(hiResUrl, wallpaper);
+                }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[UI] 壁纸点击事件失败: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[UI] 打开全屏预览失败: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// 后台把预览图换成高清版。解码限制在 2048 宽 —— 再高屏幕也显示不出来，
+        /// 但内存占用会翻好几倍（4K 原图直接解是 33 MB 一张）。
+        /// </summary>
+        private async Task UpgradeFullScreenImageAsync(string url, Wallpaper wallpaper)
+        {
+            try
+            {
+                var bitmap = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage
+                {
+                    DecodePixelType = Microsoft.UI.Xaml.Media.Imaging.DecodePixelType.Physical,
+                    DecodePixelWidth = 2048
+                };
+
+                var tcs = new TaskCompletionSource<bool>();
+                bitmap.ImageOpened += (_, _) => tcs.TrySetResult(true);
+                bitmap.ImageFailed += (_, _) => tcs.TrySetResult(false);
+
+                bitmap.UriSource = new Uri(url);
+
+                // 等它真的解码完再换上去，避免先黑一下再出图
+                var opened = await tcs.Task;
+
+                // 这期间用户可能已经关掉、或者点了另一张
+                if (opened
+                    && ReferenceEquals(_fullScreenWallpaper, wallpaper)
+                    && FullScreenImageViewer.Visibility == Visibility.Visible)
+                {
+                    FullScreenImage.Source = bitmap;
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[UI] 高清预览加载失败: {ex.Message}");
+            }
+        }
+
+        private static Microsoft.UI.Xaml.Media.Imaging.BitmapImage? CreateBitmap(string url, int decodePixelWidth)
+        {
+            try
+            {
+                var bitmap = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage();
+
+                if (decodePixelWidth > 0)
+                {
+                    bitmap.DecodePixelType = Microsoft.UI.Xaml.Media.Imaging.DecodePixelType.Physical;
+                    bitmap.DecodePixelWidth = decodePixelWidth;
+                }
+
+                bitmap.UriSource = new Uri(url);
+                return bitmap;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 卡片悬停缩放：1.0 → 1.04，150ms 缓出。同时把 z 序提上来，
+        /// 否则放大后的边缘会被右边和下边的卡片压住。
+        /// </summary>
+        private void AnimateCardScale(object sender, double target, int zIndex)
+        {
+            if (sender is not FrameworkElement element)
+            {
+                return;
+            }
+
+            Canvas.SetZIndex(element, zIndex);
+
+            if (element.RenderTransform is not Microsoft.UI.Xaml.Media.ScaleTransform transform)
+            {
+                return;
+            }
+
+            var storyboard = new Microsoft.UI.Xaml.Media.Animation.Storyboard();
+            var easing = new Microsoft.UI.Xaml.Media.Animation.CubicEase
+            {
+                EasingMode = Microsoft.UI.Xaml.Media.Animation.EasingMode.EaseOut
+            };
+
+            foreach (var property in new[] { "ScaleX", "ScaleY" })
+            {
+                var animation = new Microsoft.UI.Xaml.Media.Animation.DoubleAnimation
+                {
+                    To = target,
+                    Duration = new Duration(TimeSpan.FromMilliseconds(150)),
+                    EasingFunction = easing,
+
+                    // 缩放属于布局相关属性，不开这个开关动画不会跑
+                    EnableDependentAnimation = true
+                };
+
+                Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(animation, transform);
+                Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(animation, property);
+                storyboard.Children.Add(animation);
+            }
+
+            storyboard.Begin();
         }
 
         /// <summary>
@@ -2741,14 +2914,7 @@ namespace App1
         /// </summary>
         private void WallpaperGridItem_PointerEntered(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
         {
-            try
-            {
-                // 这里可以添加鼠标进入的动画效果
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[UI] 鼠标进入事件失败: {ex.Message}");
-            }
+            AnimateCardScale(sender, 1.04, 10);
         }
 
         /// <summary>
@@ -2756,14 +2922,7 @@ namespace App1
         /// </summary>
         private void WallpaperGridItem_PointerExited(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
         {
-            try
-            {
-                // 这里可以添加鼠标离开的动画效果
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[UI] 鼠标离开事件失败: {ex.Message}");
-            }
+            AnimateCardScale(sender, 1.0, 0);
         }
 
         #endregion
