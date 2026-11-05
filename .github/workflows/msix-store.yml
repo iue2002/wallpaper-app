@@ -1,0 +1,65 @@
+name: Build MSIX for Store
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional manifest version (Major.Minor.Build.Revision)"
+        required: false
+        type: string
+      configuration:
+        description: "Build configuration"
+        required: false
+        default: Release
+        type: choice
+        options:
+          - Release
+          - Debug
+
+permissions:
+  contents: read
+
+jobs:
+  build-store-package:
+    runs-on: windows-latest
+    env:
+      STORE_VERSION: ${{ inputs.version }}
+      BUILD_CONFIGURATION: ${{ inputs.configuration }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build Store package (x64)
+        shell: pwsh
+        run: |
+          $scriptPath = Join-Path $env:GITHUB_WORKSPACE 'Installer\build-store-msix.ps1'
+          if (-not (Test-Path $scriptPath)) { throw "Build script not found: $scriptPath" }
+
+          $params = @{
+            Configuration = $env:BUILD_CONFIGURATION
+            Platform      = 'x64'
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:STORE_VERSION)) {
+            $params['Version'] = $env:STORE_VERSION
+          }
+
+          & $scriptPath @params
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: msix-store-x64
+          path: |
+            artifacts/store/**/*.msixupload
+            artifacts/store/**/*.msix
+            artifacts/store/**/*.appx
+          if-no-files-found: error
