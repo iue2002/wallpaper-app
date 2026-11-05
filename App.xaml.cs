@@ -47,16 +47,12 @@ namespace App1
             // 通常是空的，命令行参数只能从 Environment.GetCommandLineArgs() 拿。
             // 原来只认 args.Arguments，所以 /background 实际上从来没生效过，
             // 开机自启每次都会把主窗口弹出来。
-            var fullCommandLine = Environment.CommandLine ?? string.Empty;
-            var launchArgs = args?.Arguments ?? string.Empty;
-            var combinedArgs = fullCommandLine + " " + launchArgs;
+            var startHidden = IsBackgroundLaunch(args);
 
-            var startHidden =
-                combinedArgs.Contains("--background", StringComparison.OrdinalIgnoreCase) ||
-                combinedArgs.Contains("/background", StringComparison.OrdinalIgnoreCase) ||
-                IsStartupTaskActivation();
-
-            AppLog.Write($"[启动] pid={Environment.ProcessId} 后台={startHidden} 命令行='{fullCommandLine}'");
+            AppLog.Write(
+                $"[启动] pid={Environment.ProcessId} 后台={startHidden} " +
+                $"打包={StartupRegistrar.IsPackaged} 激活={DescribeActivation()} " +
+                $"命令行='{Environment.CommandLine}'");
 
             bool createdNew;
             _mutex = new Mutex(true, MUTEX_NAME, out createdNew);
@@ -94,11 +90,70 @@ namespace App1
         }
 
         /// <summary>
-        /// 这次启动是不是"开机启动"带来的。
+        /// 这次启动要不要静默（只留托盘 + 自动换壁纸，不建主窗口）。
         ///
-        /// 非打包版：注册表项里带了 /background，命令行能认出来。
+        /// 两条来源，任一命中即静默：
+        ///   1. 命令行带了 /background —— 非打包版由 HKCU\...\Run 里的启动项带上；
+        ///   2. MSIX 启动任务激活 —— 打包版由系统按 Package.appxmanifest 里的
+        ///      uap5:StartupTask 拉起，命令行没有任何参数，只能问激活信息。
+        ///
+        /// 参数用「整项相等」比对，不再拿整条命令行做 Contains：
+        /// 免得将来路径或参数里恰好出现这几个字符时误判，把界面藏了或者弹出来。
+        /// </summary>
+        private static bool IsBackgroundLaunch(LaunchActivatedEventArgs? args)
+        {
+            if (HasBackgroundSwitch(Environment.GetCommandLineArgs()))
+            {
+                return true;
+            }
+
+            // 打包版由快捷方式带参数启动时，参数会走这里而不是命令行
+            if (!string.IsNullOrWhiteSpace(args?.Arguments))
+            {
+                var parts = args!.Arguments.Split(
+                    new[] { ' ', '\t' },
+                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+                if (HasBackgroundSwitch(parts))
+                {
+                    return true;
+                }
+            }
+
+            return IsStartupTaskActivation();
+        }
+
+        /// <summary>参数里有没有要求「后台启动」。/background、--background、/bg 都认。</summary>
+        private static bool HasBackgroundSwitch(string[]? argv)
+        {
+            if (argv == null || argv.Length == 0)
+            {
+                return false;
+            }
+
+            foreach (var raw in argv)
+            {
+                // 有的宿主会给参数加引号，先削掉再比
+                var token = raw.Trim().Trim('"');
+                if (token.Equals("/background", StringComparison.OrdinalIgnoreCase) ||
+                    token.Equals("--background", StringComparison.OrdinalIgnoreCase) ||
+                    token.Equals("-background", StringComparison.OrdinalIgnoreCase) ||
+                    token.Equals("/bg", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// 这次启动是不是「开机启动」带来的。
+        ///
+        /// 非打包版：注册表项里带了 /background，前一步的命令行判断就命中了。
         /// 打包版（MSIX）：由系统按 Package.appxmanifest 里的 uap5:StartupTask 激活，
         /// 命令行没有参数，只能问 Windows App SDK 的激活信息 —— 这是微软文档给的做法。
+        /// 认出 StartupTask 是为了让商店版开机会也只起托盘，不弹主窗口。
         /// </summary>
         private static bool IsStartupTaskActivation()
         {
@@ -108,13 +163,47 @@ namespace App1
                     .GetCurrent()
                     .GetActivatedEventArgs();
 
-                return activation != null &&
-                       activation.Kind == Microsoft.Windows.AppLifecycle.ExtendedActivationKind.StartupTask;
+                if (activation == null)
+                {
+                    return false;
+                }
+
+                if (activation.Kind == Microsoft.Windows.AppLifecycle.ExtendedActivationKind.StartupTask)
+                {
+                    return true;
+                }
+
+                // 少数情况下 Kind 报 Launch、但 Data 仍是启动任务的事件参数，
+                // 这里再兜一层，避免商店版开机被弹出窗口。
+                return activation.Data is Windows.ApplicationModel.Activation.StartupTaskActivatedEventArgs;
             }
             catch (Exception ex)
             {
                 AppLog.Write($"[启动] 读取激活类型失败: {ex.Message}");
                 return false;
+            }
+        }
+
+        /// <summary>把这次的激活类型记进日志。打包版的静默启动只有日志能事后核对。</summary>
+        private static string DescribeActivation()
+        {
+            try
+            {
+                var activation = Microsoft.Windows.AppLifecycle.AppInstance
+                    .GetCurrent()
+                    .GetActivatedEventArgs();
+
+                if (activation == null)
+                {
+                    return "none";
+                }
+
+                var data = activation.Data?.GetType().Name ?? "null";
+                return $"{activation.Kind}({data})";
+            }
+            catch (Exception ex)
+            {
+                return "读取失败:" + ex.Message;
             }
         }
 
