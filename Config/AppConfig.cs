@@ -30,6 +30,30 @@ namespace App1.Config
         /// </summary>
         public const string WikimediaUserAgent = "XiaoKWallpaper/2.1 (https://github.com/iue2002/wallpaper-app)";
 
+        // ===== 源开关 =====
+        // 代码全部保留，只是默认不参与调度。某个源修好了，把对应开关改回 true 即可。
+
+        /// <summary>
+        /// Dmoe（www.dmoe.cc）。2026-11 实测：连续采样 3 张全部是 1920×1080，
+        /// 永远达不到 2560×1440 的门槛，会被质量规则 100% 拦掉。
+        /// 更糟的是它很慢（约 67 KB/s，单张 1 MB 要十几秒），拉 8 张就是白白拖住整个批次。
+        /// 如果将来把质量门槛放宽到 1080p，这个源可以重新打开。
+        /// </summary>
+        public const bool EnableDmoe = false;
+
+        /// <summary>
+        /// PAAA（api.paaa.cn）。2026-11 实测：接口返回 200 但响应体 0 字节，
+        /// 拿不到任何图片。而且因为不抛异常，熔断机制不会触发，每批都要白等 1.8~2.6 秒。
+        /// </summary>
+        public const bool EnablePaaa = false;
+
+        /// <summary>
+        /// Seovx。2026-11 实测双重故障：
+        /// cdn.seovx.com 证书 CN 是 www.seovx.com（主机名不匹配，TLS 直接失败）；
+        /// www.seovx.com 返回 500。两个地址都取不到图。
+        /// </summary>
+        public const bool EnableSeovx = false;
+
         // ===== 并发与资源控制 =====
         /// <summary>
         /// 同时在跑的「源请求」上限。源越多越要限，否则会打满连接池和带宽。
