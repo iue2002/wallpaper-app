@@ -62,6 +62,13 @@ namespace App1
         
         private readonly ObservableCollection<Wallpaper> _wallpapers = new();
         private bool _isLoadingMore = false;
+
+        /// <summary>
+        /// 窗口是否已经真正关闭。关掉之后还在跑的加载流程要立刻停手 ——
+        /// 否则这些 async 任务会一直攥着 MainWindow 和它的可视树，
+        /// 强制 GC 也收不掉，看起来就是"关了窗口内存没降"。
+        /// </summary>
+        private bool _isWindowClosed;
         // GridView 模板内部的滚动容器，用于检测"滚到底部"触发补页
         private ScrollViewer? _gridScrollViewer;
         private int _currentPage = 0;
@@ -337,6 +344,9 @@ namespace App1
         /// </summary>
         private void MainWindow_Closed(object sender, WindowEventArgs args)
         {
+            // 先立旗子：正在跑的加载循环看到它就停手，不再往集合里塞东西
+            _isWindowClosed = true;
+
             try
             {
                 // 先存设置。必须放在释放资源之前 —— 后面会把 _taskbarBlurService 置空，
@@ -352,19 +362,67 @@ namespace App1
                     _taskbarBlurService = null;
                 }
 
+                // 先把数据源摘掉。ItemsSource 还指着集合的话，GridView / FlipView
+                // 会一直持有容器，容器里的 Image 又持有位图，整棵树跟着窗口对象一起留着。
+                try { WallpaperGridView.ItemsSource = null; } catch { }
+                try { ImmersiveFlipView.ItemsSource = null; } catch { }
+
+                // 把可视树里所有 Image.Source 置空，让位图的引用计数归零。
+                // 这是"关了窗口内存不降"的真正原因：XAML 的 Image 不释放 Source，
+                // 后端的 BitmapImage 就一直活着，几十张图就是几百 MB 的 native 内存，
+                // 托管 GC 完全看不到它。
+                try { ClearImageSources(Content as DependencyObject); } catch { }
+
+                // 整棵树从窗口上摘下来，XamlRoot 与可视树之间的引用一并断掉
+                try { Content = null; } catch { }
+
+                _wallpapers.Clear();
+                _immersiveWallpapers.Clear();
+
                 try { _pexelsApi?.Dispose(); } catch { }
                 try { _pixabayApi?.Dispose(); } catch { }
                 try { _picsumApi?.Dispose(); } catch { }
                 try { _commonsApi?.Dispose(); } catch { }
                 try { _databaseService?.Dispose(); } catch { }
-
-                // 把列表清空，卡片容器和位图尽快变成垃圾（窗口本身马上也会被销毁）
-                try { _wallpapers.Clear(); } catch { }
-                try { _immersiveWallpapers.Clear(); } catch { }
+                _databaseService = null;
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[主窗口] 关闭时释放资源失败: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 递归把可视树里所有 Image 的 Source 置空。
+        /// 只清集合是不够的：集合里的 Wallpaper 是数据，真正吃内存的是
+        /// 每个 Image 背后那张已经解码好的位图。
+        /// </summary>
+        private static void ClearImageSources(Microsoft.UI.Xaml.DependencyObject? root)
+        {
+            if (root == null)
+            {
+                return;
+            }
+
+            try
+            {
+                var count = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(root);
+
+                for (var i = 0; i < count; i++)
+                {
+                    var child = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(root, i);
+
+                    if (child is Microsoft.UI.Xaml.Controls.Image image)
+                    {
+                        image.Source = null;
+                    }
+
+                    ClearImageSources(child);
+                }
+            }
+            catch
+            {
+                // 树正在销毁时个别节点取不到子元素，忽略
             }
         }
 
@@ -710,6 +768,11 @@ namespace App1
                 
                 void AddWallpapersToUi(IEnumerable<Wallpaper> wallpapers, string sourceTag, int? take = null)
                 {
+                    if (_isWindowClosed)
+                    {
+                        return;
+                    }
+
                     var items = take.HasValue ? wallpapers.Take(take.Value) : wallpapers;
                     foreach (var wallpaper in items)
                     {
@@ -1389,6 +1452,12 @@ namespace App1
                 {
                     DispatcherQueue.TryEnqueue(() =>
                     {
+                        // 入队之后窗口可能已经关了，这里再确认一次
+                        if (_isWindowClosed)
+                        {
+                            return;
+                        }
+
                         _immersiveWallpapers.Add(wallpaper);
                         loadedCount++;
                         
@@ -1587,52 +1656,6 @@ namespace App1
             e.Handled = true;
         }
         
-        /// <summary>
-        /// 翻页时把离当前页较远的位图放掉。
-        /// 一张 4K 图解码后约 33MB，翻几十页就是几个 GB。虚拟化本身会回收容器，
-        /// 但容器回收时机不是我们能控制的，这里再兜一层：明确把远处的 Source 置空。
-        /// 翻回去时 Loaded 会重新触发加载，图片本来就有磁盘缓存，代价很小。
-        /// </summary>
-        private void ImmersiveFlipView_SelectionChanged(object sender, Microsoft.UI.Xaml.Controls.SelectionChangedEventArgs e)
-        {
-            var current = ImmersiveFlipView.SelectedIndex;
-            if (current < 0)
-            {
-                return;
-            }
-
-            for (var i = 0; i < _immersiveWallpapers.Count; i++)
-            {
-                try
-                {
-                    // 容器已经被虚拟化回收的，本来就不占内存，跳过
-                    if (ImmersiveFlipView.ContainerFromIndex(i) is not Microsoft.UI.Xaml.Controls.FlipViewItem item
-                        || FindDescendant<Microsoft.UI.Xaml.Controls.Image>(item) is not { } image)
-                    {
-                        continue;
-                    }
-
-                    if (Math.Abs(i - current) <= 2)
-                    {
-                        // 前后各两页留着。之前被释放过的要补回来，
-                        // 否则翻回去时容器还在、Loaded 不会再触发，看到的就是一片空白。
-                        if (image.Source == null)
-                        {
-                            _ = LoadImmersiveImageAsync(image);
-                        }
-                    }
-                    else
-                    {
-                        image.Source = null;
-                    }
-                }
-                catch
-                {
-                    // 容器可能正在回收，拿不到就算了
-                }
-            }
-        }
-
         /// <summary>
         /// 沉浸式图片的解码目标宽度。
         /// 全屏看图确实要清晰，但没必要按 4K 原图解码：3840x2160 一张位图就是 33MB，

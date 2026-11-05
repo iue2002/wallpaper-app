@@ -300,15 +300,19 @@
                 </GridView.Footer>
             </GridView>
             
-            <!-- 沉浸式浏览模式。
-                 这里原来显式把 ItemsPanel 覆盖成 StackPanel，等于给 FlipView 关掉了虚拟化：
-                 每翻一页都新建一个图片容器、并且永远留在可视树里，图片解码后的位图
-                 也跟着常驻。改成用默认的 ItemsStackPanel（虚拟化），只保留当前页附近的容器。 -->
+            <!-- 沉浸式浏览模式。 -->
             <FlipView x:Name="ImmersiveFlipView"
                       Visibility="Visible"
                       PointerWheelChanged="ImmersiveFlipView_PointerWheelChanged"
-                      SelectionChanged="ImmersiveFlipView_SelectionChanged"
                       Background="{ThemeResource LayerFillColorDefaultBrush}">
+                <!-- 保持最初的行为：显式用 StackPanel。
+                     换成默认的虚拟化面板之后，翻页会回收容器，滚轮切换的手感、
+                     图片出现的时机都跟原来不一样了，这条不能动。 -->
+                <FlipView.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <StackPanel />
+                    </ItemsPanelTemplate>
+                </FlipView.ItemsPanel>
                 <FlipView.ItemTemplate>
                     <DataTemplate>
                         <Grid>
