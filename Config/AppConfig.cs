@@ -18,6 +18,34 @@ namespace App1.Config
         public const string PeapixBaseUrl = "https://peapix.com/";
         public const int BingImageCount = 30;            // Bing中国壁纸数量
         public const int SpotlightImageCount = 20;       // Spotlight壁纸数量
+
+        /// <summary>
+        /// Pixabay 免费 API Key。留空则该源自动跳过，不影响其它源。
+        /// 申请地址：https://pixabay.com/api/docs/ （注册即得，免费）
+        /// </summary>
+        public const string PixabayApiKey = "";
+
+        /// <summary>
+        /// Wikimedia Commons 要求带可识别的 User-Agent，否则会被限流。
+        /// </summary>
+        public const string WikimediaUserAgent = "XiaoKWallpaper/2.1 (https://github.com/iue2002/wallpaper-app)";
+
+        // ===== 并发与资源控制 =====
+        /// <summary>
+        /// 同时在跑的「源请求」上限。源越多越要限，否则会打满连接池和带宽。
+        /// 元数据请求很轻（几 KB JSON），真正的重活是后续图片下载与解码。
+        /// </summary>
+        public const int MaxConcurrentSourceRequests = 4;
+
+        /// <summary>
+        /// 某个源连续失败达到该次数后进入冷却，冷却期内不再请求。
+        /// </summary>
+        public const int SourceFailureThreshold = 3;
+
+        /// <summary>
+        /// 源熔断冷却时长（秒）。冷却结束后自动恢复一次试探。
+        /// </summary>
+        public const int SourceCooldownSeconds = 120;
         
         // ===== 缓存配置 =====
         public const long MaxCacheSizeMB = 500;          // 最大缓存500MB

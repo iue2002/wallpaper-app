@@ -12,6 +12,7 @@ using App1.Services;
 using App1.Services.Api;
 using App1.Services.Cache;
 using App1.Services.Data;
+using App1.Services.Network;
 using App1.Services.WallpaperSetter;
 using App1.Config;
 using App1.Helpers;
@@ -31,6 +32,9 @@ namespace App1
         private readonly PaaaApiService _paaaApi;
         private readonly Upx8ApiService _upx8Api;
         private readonly SeovxApiService _seovxApi;
+        private readonly PixabayApiService _pixabayApi;
+        private readonly PicsumApiService _picsumApi;
+        private readonly WikimediaCommonsApiService _commonsApi;
         private DatabaseService? _databaseService;
         private WallpaperRepository? _repository;
         private readonly CacheService _cacheService;
@@ -47,6 +51,8 @@ namespace App1
         // 沉浸式模式独立数据源
         private readonly ObservableCollection<Wallpaper> _immersiveWallpapers = new();
         private bool _isLoadingImmersive = false;
+        // 沉浸式每批轮换源时用到：记住下一批从哪个源开始，避免总打同样几个
+        private int _immersiveSourceCursor = 0;
         private int _immersiveLoadCount = 0;  // 已加载批次计数
         private int _savedImmersiveIndex = 0;  // 保存的沉浸式模式位置
         
@@ -72,6 +78,7 @@ namespace App1
         // 滚轮事件节流
         private DateTime _lastWheelTime = DateTime.MinValue;
         private const int WHEEL_THROTTLE_MS = 200;  // 滚轮事件节流：200毫秒
+        private const int LOAD_MORE_MIN_INTERVAL_MS = 1200;  // 两页之间的最小间隔，防止滚动到底部时连环触发
         private double _lastScrollOffset = 0;
         
         // Windows 版本检测（Win11 可以直接加载 HTTPS，Win10 需要下载）
@@ -130,6 +137,9 @@ namespace App1
             _paaaApi = new PaaaApiService();
             _upx8Api = new Upx8ApiService();
             _seovxApi = new SeovxApiService();
+            _pixabayApi = new PixabayApiService();
+            _picsumApi = new PicsumApiService();
+            _commonsApi = new WikimediaCommonsApiService();
             _cacheService = new CacheService();
             _wallpaperService = new WallpaperService();
             
@@ -353,6 +363,9 @@ namespace App1
                 StopAllTimers();
                 _trayManager?.Dispose();
                 _pexelsApi?.Dispose();
+                _pixabayApi?.Dispose();
+                _picsumApi?.Dispose();
+                _commonsApi?.Dispose();
                 _databaseService?.Dispose();
 
                 System.Diagnostics.Debug.WriteLine("[主窗口] 资源已释放，窗口将关闭");
@@ -389,6 +402,9 @@ namespace App1
                 try { _pexelsApi?.Dispose(); } catch { }
                 try { _qihuApi?.Dispose(); } catch { }
                 try { _unsplashApi?.Dispose(); } catch { }
+                try { _pixabayApi?.Dispose(); } catch { }
+                try { _picsumApi?.Dispose(); } catch { }
+                try { _commonsApi?.Dispose(); } catch { }
                 try { _databaseService?.Dispose(); } catch { }
 
                 // 移除托盘图标并释放托盘管理器
@@ -800,77 +816,29 @@ namespace App1
                     System.Diagnostics.Debug.WriteLine($"[360壁纸] 获取失败: {ex.Message}");
                 }
 
-                // 并行处理其他壁纸源
+                // 并行处理其余源：统一走 SourceGate，全局最多 4 个源同时请求。
+                // 源多了并不代表更快——带宽是常量，同时开 11 条只会互相抢。
+                // 闸门让它们排队，谁先回来谁先上屏，同时给坏源加冷却，不再每次都陪它等超时。
                 var otherTasks = new Dictionary<string, Task<List<Wallpaper>>>();
 
-                // Dmoe
-                otherTasks["Dmoe壁纸"] = Task.Run(async () => {
-                    try
+                void QueueSource(string tag, string gateKey, Func<Task<List<Wallpaper>>> fetch)
+                {
+                    otherTasks[tag] = Task.Run(() => SourceGate.RunAsync(gateKey, async () =>
                     {
-                        System.Diagnostics.Debug.WriteLine("[Dmoe壁纸] 获取 8 张...");
-                        return await _dmoeApi.GetWallpapersAsync(8);
-                    }
-                    catch (Exception ex)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[Dmoe壁纸] 获取失败: {ex.Message}");
-                        return new List<Wallpaper>();
-                    }
-                });
+                        System.Diagnostics.Debug.WriteLine($"[{tag}] 开始获取...");
+                        return await fetch();
+                    }));
+                }
 
-                // PAAA
-                otherTasks["PAAA壁纸"] = Task.Run(async () => {
-                    try
-                    {
-                        System.Diagnostics.Debug.WriteLine("[PAAA壁纸] 获取 6 张...");
-                        return await _paaaApi.GetWallpapersAsync(6);
-                    }
-                    catch (Exception ex)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[PAAA壁纸] 获取失败: {ex.Message}");
-                        return new List<Wallpaper>();
-                    }
-                });
+                QueueSource("Dmoe壁纸", "dmoe", () => _dmoeApi.GetWallpapersAsync(8));
+                QueueSource("PAAA壁纸", "paaa", () => _paaaApi.GetWallpapersAsync(6));
+                QueueSource("Upx8壁纸", "upx8", () => _upx8Api.GetWallpapersAsync(6));
+                QueueSource("Seovx壁纸", "seovx", () => _seovxApi.GetWallpapersAsync(6));
+                QueueSource("Unsplash壁纸", "unsplash", () => _unsplashApi.GetRandomWallpapersAsync(6));
+                QueueSource("Commons壁纸", "commons", () => _commonsApi.GetWallpapersAsync(6));
+                QueueSource("Pixabay壁纸", "pixabay", () => _pixabayApi.GetWallpapersAsync(6));
+                QueueSource("Picsum壁纸", "picsum", () => _picsumApi.GetWallpapersAsync(4));
 
-                // Upx8
-                otherTasks["Upx8壁纸"] = Task.Run(async () => {
-                    try
-                    {
-                        System.Diagnostics.Debug.WriteLine("[Upx8壁纸] 获取 6 张...");
-                        return await _upx8Api.GetWallpapersAsync(6);
-                    }
-                    catch (Exception ex)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[Upx8壁纸] 获取失败: {ex.Message}");
-                        return new List<Wallpaper>();
-                    }
-                });
-
-                // Seovx
-                otherTasks["Seovx壁纸"] = Task.Run(async () => {
-                    try
-                    {
-                        System.Diagnostics.Debug.WriteLine("[Seovx壁纸] 获取 6 张...");
-                        return await _seovxApi.GetWallpapersAsync(6);
-                    }
-                    catch (Exception ex)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[Seovx壁纸] 获取失败: {ex.Message}");
-                        return new List<Wallpaper>();
-                    }
-                });
-
-                otherTasks["Unsplash壁纸"] = Task.Run(async () => {
-                    try
-                    {
-                        System.Diagnostics.Debug.WriteLine("[Unsplash壁纸] 获取 6 张...");
-                        return await _unsplashApi.GetRandomWallpapersAsync(6);
-                    }
-                    catch (Exception ex)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[Unsplash壁纸] 获取失败: {ex.Message}");
-                        return new List<Wallpaper>();
-                    }
-                });
 
                 var pendingTasks = otherTasks.ToList();
                 while (pendingTasks.Count > 0)
@@ -960,23 +928,39 @@ namespace App1
             if (_isImmersiveMode || _isLoadingMore) return;
             
             var verticalOffset = scrollViewer.VerticalOffset;
+            // 只有「快到底部」才补页，而不是随便滚一下就来一页。
+            // 原来是任何超过 10px 的滚动都会触发加载，滚一次就多一页、多几十张图，
+            // 带宽和内存全花在用户根本没看的位置上。
+            var remainingPixels = scrollViewer.ScrollableHeight - verticalOffset - scrollViewer.ViewportHeight;
             var offsetDelta = Math.Abs(verticalOffset - _lastScrollOffset);
             var now = DateTime.Now;
             var elapsedMs = (now - _lastWheelTime).TotalMilliseconds;
-            if (offsetDelta > 10 && elapsedMs >= WHEEL_THROTTLE_MS)
+
+            if (offsetDelta > 10)
             {
                 _lastScrollOffset = verticalOffset;
-                _lastWheelTime = now;
-                System.Diagnostics.Debug.WriteLine("[滚动检测] 检测到滚动，加载更多...");
-                try
-                {
-                    await LoadMoreWallpapersAsync();
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[滚动加载] 异常: {ex.Message}");
-                }
-           }
+            }
+
+            if (remainingPixels > 600)
+            {
+                return;
+            }
+
+            if (elapsedMs < LOAD_MORE_MIN_INTERVAL_MS)
+            {
+                return;
+            }
+
+            _lastWheelTime = now;
+            System.Diagnostics.Debug.WriteLine($"[滚动检测] 距底部 {remainingPixels:F0}px，加载更多...");
+            try
+            {
+                await LoadMoreWallpapersAsync();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[滚动加载] 异常: {ex.Message}");
+            }
         }
         
         /// <summary>
@@ -1450,113 +1434,39 @@ namespace App1
                     System.Diagnostics.Debug.WriteLine($"[沉浸式加载] 详细信息: {ex}");
                 }
                 
-                // 并行加载其余源，每获取一张立即添加
-                var tasks = new List<System.Threading.Tasks.Task>
+                // 其余源：每批只轮到 4 个（轮换），不再每批打满全部源。
+                // 每批其实只取 1 张，打满 8 个源等于用 8 次请求换 8 张图，
+                // 而用户一次只看一张，多出来的全是提前烧掉的带宽和内存。
+                var remainingSources = new (string Tag, string GateKey, Func<Task<List<Wallpaper>>> Fetch)[]
                 {
-                    // Unsplash
-                    System.Threading.Tasks.Task.Run(async () =>
-                    {
-                        try
-                        {
-                            var unsplashWallpapers = await _unsplashApi.GetRandomWallpapersAsync(1);
-                            if (unsplashWallpapers.Count > 0)
-                            {
-                                var wallpaper = unsplashWallpapers.First();
-                                
-                                AddImmersiveWallpaper(wallpaper, "Unsplash");
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ❌ Unsplash失败: {ex.GetType().Name} - {ex.Message}");
-                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] 详细信息: {ex}");
-                        }
-                    }),
-                    
-
-                    
-                    // Dmoe
-                    System.Threading.Tasks.Task.Run(async () =>
-                    {
-                        try
-                        {
-                            var dmoeWallpapers = await _dmoeApi.GetWallpapersAsync(1);
-                            if (dmoeWallpapers.Count > 0)
-                            {
-                                var wallpaper = dmoeWallpapers.First();
-                                
-                                AddImmersiveWallpaper(wallpaper, "Dmoe");
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ❌ Dmoe失败: {ex.GetType().Name} - {ex.Message}");
-                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] 详细信息: {ex}");
-                        }
-                    }),
-                    
-                    // PAAA
-                    System.Threading.Tasks.Task.Run(async () =>
-                    {
-                        try
-                        {
-                            var paaaWallpapers = await _paaaApi.GetWallpapersAsync(1);
-                            if (paaaWallpapers.Count > 0)
-                            {
-                                var wallpaper = paaaWallpapers.First();
-                                
-                                AddImmersiveWallpaper(wallpaper, "PAAA");
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ❌ PAAA失败: {ex.GetType().Name} - {ex.Message}");
-                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] 详细信息: {ex}");
-                        }
-                    }),
-                    
-                    // Upx8
-                    System.Threading.Tasks.Task.Run(async () =>
-                    {
-                        try
-                        {
-                            var upx8Wallpapers = await _upx8Api.GetWallpapersAsync(1);
-                            if (upx8Wallpapers.Count > 0)
-                            {
-                                var wallpaper = upx8Wallpapers.First();
-                                
-                                AddImmersiveWallpaper(wallpaper, "Upx8");
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ❌ Upx8失败: {ex.GetType().Name} - {ex.Message}");
-                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] 详细信息: {ex}");
-                        }
-                    }),
-                    
-                    // Seovx
-                    System.Threading.Tasks.Task.Run(async () =>
-                    {
-                        try
-                        {
-                            var seovxWallpapers = await _seovxApi.GetWallpapersAsync(1);
-                            if (seovxWallpapers.Count > 0)
-                            {
-                                var wallpaper = seovxWallpapers.First();
-                                
-                                AddImmersiveWallpaper(wallpaper, "Seovx");
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] ❌ Seovx失败: {ex.GetType().Name} - {ex.Message}");
-                            System.Diagnostics.Debug.WriteLine($"[沉浸式加载] 详细信息: {ex}");
-                        }
-                    }),
-                    
-
+                    ("Unsplash", "unsplash", () => _unsplashApi.GetRandomWallpapersAsync(1)),
+                    ("Dmoe", "dmoe", () => _dmoeApi.GetWallpapersAsync(1)),
+                    ("PAAA", "paaa", () => _paaaApi.GetWallpapersAsync(1)),
+                    ("Upx8", "upx8", () => _upx8Api.GetWallpapersAsync(1)),
+                    ("Seovx", "seovx", () => _seovxApi.GetWallpapersAsync(1)),
+                    ("Commons", "commons", () => _commonsApi.GetWallpapersAsync(1)),
+                    ("Pixabay", "pixabay", () => _pixabayApi.GetWallpapersAsync(1)),
+                    ("Picsum", "picsum", () => _picsumApi.GetWallpapersAsync(1))
                 };
+
+                const int sourcesPerBatch = 4;
+                var batchSources = new List<(string Tag, string GateKey, Func<Task<List<Wallpaper>>> Fetch)>();
+                for (var i = 0; i < sourcesPerBatch && i < remainingSources.Length; i++)
+                {
+                    batchSources.Add(remainingSources[(_immersiveSourceCursor + i) % remainingSources.Length]);
+                }
+                _immersiveSourceCursor = (_immersiveSourceCursor + sourcesPerBatch) % remainingSources.Length;
+
+                System.Diagnostics.Debug.WriteLine($"[沉浸式加载] 本批轮到的源: {string.Join(" / ", batchSources.Select(s => s.Tag))}");
+
+                var tasks = batchSources.Select(source => System.Threading.Tasks.Task.Run(async () =>
+                {
+                    var result = await SourceGate.RunAsync(source.GateKey, source.Fetch);
+                    if (result.Count > 0)
+                    {
+                        AddImmersiveWallpaper(result.First(), source.Tag);
+                    }
+                })).ToList();
                 
                 // 等待所有任务完成
                 await System.Threading.Tasks.Task.WhenAll(tasks);
