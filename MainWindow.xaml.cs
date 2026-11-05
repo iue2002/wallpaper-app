@@ -2686,8 +2686,8 @@ namespace App1
             FullScreenImageLow.Source = null;
             FullScreenImageHigh.Source = null;
 
-            Microsoft.UI.Xaml.Hosting.ElementCompositionPreview
-                .GetElementVisual(FullScreenImageHigh).Opacity = 0f;
+            // 这里不再对已经脱离可视树的元素调 GetElementVisual。
+            // 下次打开时会在挂载之后重置一次 Opacity，没必要在这儿碰它。
         }
 
         /// <summary>
@@ -2880,6 +2880,7 @@ namespace App1
             _cardTapCts = new System.Threading.CancellationTokenSource();
             var token = _cardTapCts.Token;
 
+            App1.Services.Diagnostics.UiTrace.Write("[tap] 卡片点击，进入 220ms 等待");
             _ = OpenPreviewAfterTapAsync(wallpaper, token);
         }
 
@@ -2891,6 +2892,7 @@ namespace App1
             }
             catch (OperationCanceledException)
             {
+                App1.Services.Diagnostics.UiTrace.Write("[tap] 取消（判定为双击）");
                 return;   // 双击了，不弹预览
             }
 
@@ -2906,6 +2908,7 @@ namespace App1
                 return;
             }
 
+            App1.Services.Diagnostics.UiTrace.Write("[tap] 等待结束，准备打开预览");
             ShowFullScreenImage(wallpaper);
         }
 
@@ -2918,25 +2921,40 @@ namespace App1
         {
             try
             {
+                App1.Services.Diagnostics.UiTrace.Write("[preview] 开始");
+
                 _fullScreenWallpaper = wallpaper;
                 _previewVersion++;
 
                 FullScreenTitle.Text = wallpaper.Title;
                 FullScreenCopyright.Text = wallpaper.Copyright;
 
+                // 顺序很关键：先把预览层挂进可视树，再碰它的子元素。
+                // 原来是对还处于 Collapsed 状态的 FullScreenImageHigh 调
+                // GetElementVisual —— 元素没进可视树时拿到的是一个游离 visual，
+                // 紧接着 Visibility 变可见、visual 被重新插入，合成器里的旧状态
+                // 会让渲染线程卡住，表现就是"点一下整个窗口不动了"。
+                App1.Services.Diagnostics.UiTrace.Write("[preview] 即将设为可见");
+                FullScreenImageViewer.Visibility = Visibility.Visible;
+                App1.Services.Diagnostics.UiTrace.Write("[preview] 层已可见");
+
                 FullScreenImageLow.Source = null;
                 FullScreenImageHigh.Source = null;
                 Microsoft.UI.Xaml.Hosting.ElementCompositionPreview
                     .GetElementVisual(FullScreenImageHigh).Opacity = 0f;
-
-                FullScreenImageViewer.Visibility = Visibility.Visible;
+                App1.Services.Diagnostics.UiTrace.Write("[preview] 清空旧图、重置高清层");
 
                 if (!string.IsNullOrEmpty(wallpaper.ThumbUrl))
                 {
-                    FullScreenImageLow.Source = CreateBitmap(wallpaper.ThumbUrl, 0);
+                    // 这一层只求"点下去立刻有画面"，按 1280 宽解码足够铺满屏幕。
+                    // 原来传 0 = 不限制解码尺寸，而 Upx8 / Dmoe 这类源的 ThumbUrl
+                    // 本身就是 4K 原图，单张位图就要 33MB，解码直接压住 UI 线程。
+                    FullScreenImageLow.Source = CreateBitmap(wallpaper.ThumbUrl, 1280);
                 }
+                App1.Services.Diagnostics.UiTrace.Write("[preview] 缩略图源已设置");
 
                 PlayOpenAnimation();
+                App1.Services.Diagnostics.UiTrace.Write("[preview] 开场动画已启动");
 
                 var hiResUrl = !string.IsNullOrEmpty(wallpaper.FullUrl) ? wallpaper.FullUrl : wallpaper.ThumbUrl;
 
@@ -2945,9 +2963,12 @@ namespace App1
                 {
                     _ = UpgradeFullScreenImageAsync(hiResUrl, wallpaper);
                 }
+
+                App1.Services.Diagnostics.UiTrace.Write("[preview] 完成");
             }
             catch (Exception ex)
             {
+                App1.Services.Diagnostics.UiTrace.Write($"[preview] 异常: {ex.GetType().Name} / {ex.Message}");
                 System.Diagnostics.Debug.WriteLine($"[UI] 打开全屏预览失败: {ex.Message}");
             }
         }
