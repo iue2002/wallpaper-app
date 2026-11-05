@@ -39,7 +39,6 @@ namespace App1
         private WallpaperRepository? _repository;
         private readonly CacheService _cacheService;
         private readonly WallpaperService _wallpaperService;
-        private TrayManager? _trayManager; // 托盘管理器
         private TaskbarBlurServiceV2? _taskbarBlurService; // 任务栏透明服务
 
         /// <summary>
@@ -80,9 +79,10 @@ namespace App1
         // 右键菜单相关
         private Wallpaper? _currentContextWallpaper = null;  // 当前右键点击的壁纸
         
-        // 定时切换功能
-        private DispatcherTimer? _desktopWallpaperTimer = null;  // 桌面壁纸定时器
-        private DispatcherTimer? _lockScreenWallpaperTimer = null;  // 锁屏壁纸定时器
+        // 定时切换功能。
+        // 真正的调度在 App 层的 AutoWallpaperService 里跑（System.Threading.Timer，
+        // 不依赖 UI）。主窗口关掉销毁之后它照样工作，所以这里只保留 UI 需要的状态：
+        // 菜单上打不打勾、状态栏显示什么。
         private bool _isDesktopTimerEnabled = false;  // 桌面定时器是否启用
         private bool _isLockScreenTimerEnabled = false;  // 锁屏定时器是否启用
         
@@ -90,7 +90,6 @@ namespace App1
         private AppSettings _appSettings = new AppSettings();
         
         // 允许真正关闭的标志（用于从托盘退出时绕过最小化行为）
-        private bool _allowClose = false;
         
         // 网络状态
         private int _consecutiveNetworkErrors = 0;  // 连续网络错误次数
@@ -104,12 +103,10 @@ namespace App1
         
         // Windows 版本检测（Win11 可以直接加载 HTTPS，Win10 需要下载）
         private readonly bool _isWindows11;
-        private readonly bool _startHiddenOnLaunch;
 
-        public MainWindow(bool startHiddenOnLaunch = false)
+        public MainWindow()
         {
             this.InitializeComponent();
-            _startHiddenOnLaunch = startHiddenOnLaunch;
             
             // 检测 Windows 版本
             _isWindows11 = IsWindows11OrGreater();
@@ -192,33 +189,12 @@ namespace App1
             
             // 加载应用设置
             LoadAppSettings();
-            
-            // 初始化系统托盘
-            _trayManager = new TrayManager(this, () =>
-            {
-                // 在UI线程执行安全关闭
-                this.DispatcherQueue.TryEnqueue(() => Shutdown());
-            });
 
             // 初始化任务栏透明服务
             _taskbarBlurService = new TaskbarBlurServiceV2();
 
-            // 开机自启后台启动：初始化后直接隐藏窗口，仅保留托盘
-            if (_startHiddenOnLaunch)
-            {
-                this.DispatcherQueue.TryEnqueue(() =>
-                {
-                    try
-                    {
-                        this.AppWindow.Hide();
-                        System.Diagnostics.Debug.WriteLine("[启动] 后台模式启动，主窗口已隐藏到托盘");
-                    }
-                    catch (Exception ex)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[启动] 后台隐藏失败: {ex.Message}");
-                    }
-                });
-            }
+            // 托盘图标由 App 层的 TrayHost 负责 —— 它是个独立的隐藏窗口，
+            // 主窗口关掉之后仍然活着。这里不再自己挂托盘。
             
             // 检查开机启动状态（后台检查，不显示提示）
             _ = CheckStartupTaskAsync();
@@ -350,28 +326,24 @@ namespace App1
         /// <summary>
         /// 窗口关闭时的处理：默认最小化到托盘，除非允许真正关闭
         /// </summary>
+        /// <summary>
+        /// 窗口关闭。这里不再拦截 —— 关闭就是真的销毁。
+        ///
+        /// 原来是把窗口 Hide() 掉，窗口对象、XAML 树、已经解码的图片全都留在内存里，
+        /// 所以"最小化到托盘"之后内存其实一点没降。现在窗口关掉，这些全部交给 GC，
+        /// 剩下的只有托盘图标和一个定时器。
+        ///
+        /// 定时器不在这里停：它是 App 层的常驻服务，关窗口不等于关自动换壁纸。
+        /// </summary>
         private void MainWindow_Closed(object sender, WindowEventArgs args)
         {
             try
             {
-                System.Diagnostics.Debug.WriteLine("[主窗口] 关闭事件触发");
+                // 先存设置。必须放在释放资源之前 —— 后面会把 _taskbarBlurService 置空，
+                // 再存的话"任务栏透明已开启"会被写成 false，下次开窗口就丢了。
+                SaveAppSettings();
 
-                if (!_allowClose)
-                {
-                    // 取消关闭并最小化到托盘
-                    args.Handled = true;
-                    this.AppWindow.Hide();
-
-                    string message = _isDesktopTimerEnabled || _isLockScreenTimerEnabled
-                        ? "已最小化到后台，定时器继续运行"
-                        : "已最小化到后台";
-                    _trayManager?.ShowNotification("小K壁纸", message);
-
-                    System.Diagnostics.Debug.WriteLine("[主窗口] 已最小化到托盘");
-                    return;
-                }
-
-                System.Diagnostics.Debug.WriteLine("[主窗口] 允许关闭，开始释放资源...");
+                System.Diagnostics.Debug.WriteLine("[主窗口] 关闭，释放窗口级资源");
 
                 // 恢复任务栏默认外观
                 if (_taskbarBlurService != null)
@@ -380,69 +352,45 @@ namespace App1
                     _taskbarBlurService = null;
                 }
 
-                // 停止所有定时器并释放资源（防止进程残留）
-                StopAllTimers();
-                _trayManager?.Dispose();
-                _pexelsApi?.Dispose();
-                _pixabayApi?.Dispose();
-                _picsumApi?.Dispose();
-                _commonsApi?.Dispose();
-                _databaseService?.Dispose();
+                try { _pexelsApi?.Dispose(); } catch { }
+                try { _pixabayApi?.Dispose(); } catch { }
+                try { _picsumApi?.Dispose(); } catch { }
+                try { _commonsApi?.Dispose(); } catch { }
+                try { _databaseService?.Dispose(); } catch { }
 
-                System.Diagnostics.Debug.WriteLine("[主窗口] 资源已释放，窗口将关闭");
-             }
-             catch (Exception ex)
-             {
-                 System.Diagnostics.Debug.WriteLine($"[主窗口] 最小化到托盘失败: {ex.Message}");
-             }
-         }
+                // 把列表清空，卡片容器和位图尽快变成垃圾（窗口本身马上也会被销毁）
+                try { _wallpapers.Clear(); } catch { }
+                try { _immersiveWallpapers.Clear(); } catch { }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[主窗口] 关闭时释放资源失败: {ex.Message}");
+            }
+        }
 
         /// <summary>
         /// 统一安全关闭流程：停止后台任务、释放资源并退出进程
         /// </summary>
         private void Shutdown()
         {
+            // 退出的是整个进程，不只是这个窗口。
+            // 托盘图标、后台定时器都在 App 层，由它统一收尾。
             try
             {
-                System.Diagnostics.Debug.WriteLine("[退出] 开始执行安全关闭流程...");
-
-                // 保存当前设置
                 SaveAppSettings();
 
-                // 停止并清理所有定时器
-                StopAllTimers();
-
-                // 恢复任务栏默认外观
-                if (_taskbarBlurService != null)
+                if (Application.Current is App app)
                 {
-                    _taskbarBlurService.Dispose();
-                    _taskbarBlurService = null;
+                    app.ExitApplication();
+                    return;
                 }
-
-                // 释放资源
-                try { _pexelsApi?.Dispose(); } catch { }
-                try { _qihuApi?.Dispose(); } catch { }
-                try { _unsplashApi?.Dispose(); } catch { }
-                try { _pixabayApi?.Dispose(); } catch { }
-                try { _picsumApi?.Dispose(); } catch { }
-                try { _commonsApi?.Dispose(); } catch { }
-                try { _databaseService?.Dispose(); } catch { }
-
-                // 移除托盘图标并释放托盘管理器
-                try { _trayManager?.Dispose(); _trayManager = null; } catch { }
-
-                // 允许窗口真正关闭并触发关闭流程
-                _allowClose = true;
-
-                // 最后强制退出进程以确保无残留
-                System.Diagnostics.Debug.WriteLine("[退出] 触发 Environment.Exit(0)");
-                Environment.Exit(0);
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[退出] 安全关闭失败: {ex.Message}");
-                try { Environment.Exit(0); } catch { }
             }
+
+            Environment.Exit(0);
         }
 
         /// <summary>
@@ -459,23 +407,14 @@ namespace App1
         /// </summary>
         private void StopAllTimers()
         {
-            if (_desktopWallpaperTimer != null)
-            {
-                _desktopWallpaperTimer.Stop();
-                _desktopWallpaperTimer.Tick -= OnDesktopTimerTick;
-                _desktopWallpaperTimer = null;
-                _isDesktopTimerEnabled = false;
-                System.Diagnostics.Debug.WriteLine("[定时器] 桌面定时器已停止");
-            }
-            
-            if (_lockScreenWallpaperTimer != null)
-            {
-                _lockScreenWallpaperTimer.Stop();
-                _lockScreenWallpaperTimer.Tick -= OnLockScreenTimerTick;
-                _lockScreenWallpaperTimer = null;
-                _isLockScreenTimerEnabled = false;
-                System.Diagnostics.Debug.WriteLine("[定时器] 锁屏定时器已停止");
-            }
+            _isDesktopTimerEnabled = false;
+            _isLockScreenTimerEnabled = false;
+
+            _appSettings.IsDesktopTimerEnabled = false;
+            _appSettings.IsLockScreenTimerEnabled = false;
+
+            (Application.Current as App)?.ApplyAutoWallpaperSettings(_appSettings);
+            System.Diagnostics.Debug.WriteLine("[定时器] 已全部停止");
         }
         
         /// <summary>
@@ -585,11 +524,8 @@ namespace App1
                     _isLockScreenTimerEnabled = true;
                 }
                 
-                // 同步开机自启状态：注册表为准，避免因旧配置误关开机启动
-                if (_appSettings.IsStartupEnabled)
-                {
-                    EnableStartup();
-                }
+                // 开机自启以注册表为准。这里只读不写 —— 原来配置里写着启用就顺手
+                // 写一次注册表，用户手动关掉之后，下次开窗口又会被塞回去。
                 _appSettings.IsStartupEnabled = IsStartupEnabled();
 
                 // 恢复任务栏透明状态
@@ -600,7 +536,12 @@ namespace App1
                 }
 
                 System.Diagnostics.Debug.WriteLine("[设置] 应用设置已恢复");
-                
+
+                // 把从磁盘读到的定时状态推给后台调度。
+                // 两个都关着的时候 StartWallpaperTimer 不会被调，所以这里必须补一次，
+                // 否则窗口里显示"关闭"，后台可能还在按旧间隔跑。
+                (Application.Current as App)?.ApplyAutoWallpaperSettings(_appSettings);
+
                 // 更新定时状态指示器
                 UpdateTimerStatusIndicator();
             }
@@ -610,6 +551,16 @@ namespace App1
             }
         }
         
+        /// <summary>
+        /// 退出前保存设置。App 层要调，所以必须是 public。
+        /// （原来走的是反射找一个叫 PersistSettingsForSystemExit 的方法，
+        ///   那个方法压根不存在，所以退出时其实一次都没保存过。）
+        /// </summary>
+        public void SaveSettingsNow()
+        {
+            SaveAppSettings();
+        }
+
         /// <summary>
         /// 保存应用设置
         /// </summary>
@@ -622,17 +573,8 @@ namespace App1
                 _appSettings.IsLockScreenTimerEnabled = _isLockScreenTimerEnabled;
                 _appSettings.IsTaskbarBlurEnabled = _taskbarBlurService != null && _taskbarBlurService.IsEnabled;
 
-                // 保存定时器间隔时间
-                // 如果定时器正在运行，从定时器对象获取最新的间隔时间
-                if (_desktopWallpaperTimer != null)
-                {
-                    _appSettings.DesktopTimerInterval = _desktopWallpaperTimer.Interval.TotalMinutes;
-                }
-                if (_lockScreenWallpaperTimer != null)
-                {
-                    _appSettings.LockScreenTimerInterval = _lockScreenWallpaperTimer.Interval.TotalMinutes;
-                }
-                // 即使定时器已停止，也要确保间隔时间不为0
+                // 间隔时间在 StartWallpaperTimer 里已经写进 _appSettings，
+                // 定时器本身挪到后台了，这里不再从 UI 对象上反读
                 if (_appSettings.DesktopTimerInterval <= 0)
                 {
                     _appSettings.DesktopTimerInterval = 60; // 默认1小时
@@ -2237,19 +2179,14 @@ namespace App1
         /// </summary>
         private void StopDesktopTimer()
         {
-            if (_desktopWallpaperTimer != null)
-            {
-                _desktopWallpaperTimer.Stop();
-                _desktopWallpaperTimer.Tick -= OnDesktopTimerTick;
-                _desktopWallpaperTimer = null;
-                _isDesktopTimerEnabled = false;
+            _isDesktopTimerEnabled = false;
+            _appSettings.IsDesktopTimerEnabled = false;
 
-                _appSettings.IsDesktopTimerEnabled = false;
-                SaveAppSettings();
+            SaveAppSettings();
+            (Application.Current as App)?.ApplyAutoWallpaperSettings(_appSettings);
 
-                System.Diagnostics.Debug.WriteLine("[定时器] 桌面定时器已停止");
-                _trayManager?.ShowNotification("小K壁纸", "桌面壁纸定时切换已关闭");
-            }
+            System.Diagnostics.Debug.WriteLine("[定时器] 桌面定时已关闭");
+            (Application.Current as App)?.ShowTrayNotification("小K壁纸", "桌面壁纸定时切换已关闭");
         }
 
         /// <summary>
@@ -2257,19 +2194,14 @@ namespace App1
         /// </summary>
         private void StopLockScreenTimer()
         {
-            if (_lockScreenWallpaperTimer != null)
-            {
-                _lockScreenWallpaperTimer.Stop();
-                _lockScreenWallpaperTimer.Tick -= OnLockScreenTimerTick;
-                _lockScreenWallpaperTimer = null;
-                _isLockScreenTimerEnabled = false;
+            _isLockScreenTimerEnabled = false;
+            _appSettings.IsLockScreenTimerEnabled = false;
 
-                _appSettings.IsLockScreenTimerEnabled = false;
-                SaveAppSettings();
+            SaveAppSettings();
+            (Application.Current as App)?.ApplyAutoWallpaperSettings(_appSettings);
 
-                System.Diagnostics.Debug.WriteLine("[定时器] 锁屏定时器已停止");
-                _trayManager?.ShowNotification("小K壁纸", "锁屏壁纸定时切换已关闭");
-            }
+            System.Diagnostics.Debug.WriteLine("[定时器] 锁屏定时已关闭");
+            (Application.Current as App)?.ShowTrayNotification("小K壁纸", "锁屏壁纸定时切换已关闭");
         }
 
         /// <summary>
@@ -2327,117 +2259,30 @@ namespace App1
         /// </summary>
         private void StartWallpaperTimer(bool isDesktop, double intervalMinutes, bool saveSettings = true)
         {
-            try
+            if (isDesktop)
             {
-                if (isDesktop)
-                {
-                    // 停止现有的桌面定时器
-                    if (_desktopWallpaperTimer != null)
-                    {
-                        _desktopWallpaperTimer.Stop();
-                        _desktopWallpaperTimer.Tick -= OnDesktopTimerTick;
-                        _desktopWallpaperTimer = null;
-                    }
-
-                    // 创建新的桌面定时器
-                    _desktopWallpaperTimer = new DispatcherTimer();
-                    _desktopWallpaperTimer.Interval = TimeSpan.FromMinutes(intervalMinutes);
-                    _desktopWallpaperTimer.Tick += OnDesktopTimerTick;
-                    _desktopWallpaperTimer.Start();
-                    _isDesktopTimerEnabled = true;
-
-                    // 更新设置
-                    _appSettings.IsDesktopTimerEnabled = true;
-                    _appSettings.DesktopTimerInterval = intervalMinutes;
-                    if (saveSettings)
-                    {
-                        SaveAppSettings();
-                    }
-
-                    System.Diagnostics.Debug.WriteLine($"[定时器] 桌面定时器已启动，间隔: {intervalMinutes}分钟");
-                }
-                else
-                {
-                    // 停止现有的锁屏定时器
-                    if (_lockScreenWallpaperTimer != null)
-                    {
-                        _lockScreenWallpaperTimer.Stop();
-                        _lockScreenWallpaperTimer.Tick -= OnLockScreenTimerTick;
-                        _lockScreenWallpaperTimer = null;
-                    }
-
-                    // 创建新的锁屏定时器
-                    _lockScreenWallpaperTimer = new DispatcherTimer();
-                    _lockScreenWallpaperTimer.Interval = TimeSpan.FromMinutes(intervalMinutes);
-                    _lockScreenWallpaperTimer.Tick += OnLockScreenTimerTick;
-                    _lockScreenWallpaperTimer.Start();
-                    _isLockScreenTimerEnabled = true;
-
-                    // 更新设置
-                    _appSettings.IsLockScreenTimerEnabled = true;
-                    _appSettings.LockScreenTimerInterval = intervalMinutes;
-                    if (saveSettings)
-                    {
-                        SaveAppSettings();
-                    }
-
-                    System.Diagnostics.Debug.WriteLine($"[定时器] 锁屏定时器已启动，间隔: {intervalMinutes}分钟");
-                }
-
-                // 更新定时状态指示器
-                UpdateTimerStatusIndicator();
+                _isDesktopTimerEnabled = true;
+                _appSettings.IsDesktopTimerEnabled = true;
+                _appSettings.DesktopTimerInterval = intervalMinutes;
             }
-            catch (Exception ex)
+            else
             {
-                System.Diagnostics.Debug.WriteLine($"[定时器] 启动失败: {ex.Message}");
-                ShowToast("定时切换启动失败", isSuccess: false);
+                _isLockScreenTimerEnabled = true;
+                _appSettings.IsLockScreenTimerEnabled = true;
+                _appSettings.LockScreenTimerInterval = intervalMinutes;
             }
-        }
 
-        /// <summary>
-        /// 桌面壁纸定时器回调
-        /// </summary>
-        private async void OnDesktopTimerTick(object sender, object e)
-        {
-            try
+            if (saveSettings)
             {
-                System.Diagnostics.Debug.WriteLine("[定时器] 桌面壁纸定时切换触发");
-
-                // 从API获取新的随机壁纸
-                var wallpaper = await GetRandomWallpaperFromApiAsync();
-
-                if (wallpaper != null)
-                {
-                    await SetWallpaperAsync(wallpaper);
-                }
+                SaveAppSettings();
             }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[定时器] 桌面壁纸切换失败: {ex.Message}");
-            }
-        }
 
-        /// <summary>
-        /// 锁屏壁纸定时器回调
-        /// </summary>
-        private async void OnLockScreenTimerTick(object sender, object e)
-        {
-            try
-            {
-                System.Diagnostics.Debug.WriteLine("[定时器] 锁屏壁纸定时切换触发");
+            // 真正排期的是 App 层的 AutoWallpaperService（System.Threading.Timer）。
+            // 它不依赖 UI，主窗口关掉销毁之后照样按点换，这里只负责把新间隔告诉它。
+            (Application.Current as App)?.ApplyAutoWallpaperSettings(_appSettings);
 
-                // 从API获取新的随机壁纸
-                var wallpaper = await GetRandomWallpaperFromApiAsync();
-
-                if (wallpaper != null)
-                {
-                    await SetLockScreenAsync(wallpaper);
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[定时器] 锁屏壁纸切换失败: {ex.Message}");
-            }
+            UpdateTimerStatusIndicator();
+            System.Diagnostics.Debug.WriteLine($"[定时器] {(isDesktop ? "桌面" : "锁屏")}定时已交给后台，间隔 {intervalMinutes} 分钟");
         }
 
         /// <summary>
@@ -2537,27 +2382,9 @@ namespace App1
         /// </summary>
         private void EnableStartup()
         {
-            try
-            {
-                // 使用注册表实现开机启动
-                var keyPath = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
-                using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(keyPath, true);
-                if (key != null)
-                {
-                    var exePath = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
-                    if (!string.IsNullOrEmpty(exePath))
-                    {
-                        // 添加开机启动项，使用 /background 参数
-                        key.SetValue("小K壁纸", $"\"{exePath}\" /background");
-                        System.Diagnostics.Debug.WriteLine("[开机启动] 已启用");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[开机启动] 启用失败: {ex.Message}");
-                throw;
-            }
+            // 统一走 StartupRegistrar：托盘菜单和这里必须写同一个键、同一个参数，
+            // 否则两边看到的开机启动状态会不一致。
+            StartupRegistrar.Enable();
         }
 
         /// <summary>
@@ -2565,22 +2392,7 @@ namespace App1
         /// </summary>
         private void DisableStartup()
         {
-            try
-            {
-                // 从注册表移除开机启动项
-                var keyPath = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
-                using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(keyPath, true);
-                if (key != null)
-                {
-                    key.DeleteValue("小K壁纸", false);
-                    System.Diagnostics.Debug.WriteLine("[开机启动] 已禁用");
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[开机启动] 禁用失败: {ex.Message}");
-                throw;
-            }
+            StartupRegistrar.Disable();
         }
 
         /// <summary>
@@ -2588,22 +2400,7 @@ namespace App1
         /// </summary>
         private bool IsStartupEnabled()
         {
-            try
-            {
-                var keyPath = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
-                using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(keyPath);
-                if (key != null)
-                {
-                    var value = key.GetValue("小K壁纸");
-                    return value != null;
-                }
-                return false;
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[开机启动] 检查失败: {ex.Message}");
-                return false;
-            }
+            return StartupRegistrar.IsEnabled();
         }
 
 
