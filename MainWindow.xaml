@@ -165,123 +165,126 @@
                 <Button Content="刷新获取" Click="btnRefresh_Click"/>
             </StackPanel>
             
-            <!-- 壁纸网格 -->
-            <ScrollViewer x:Name="WallpaperScrollViewer" 
-                          Visibility="Collapsed"
-                          ViewChanged="WallpaperScrollViewer_ViewChanged">
-                <StackPanel>
-                    <GridView x:Name="WallpaperGridView"
-                              SelectionMode="None"
-                              IsItemClickEnabled="False"
-                              HorizontalAlignment="Center"
-                              Padding="20">
-                        <GridView.ItemsPanel>
-                            <ItemsPanelTemplate>
-                                <ItemsWrapGrid Orientation="Horizontal" 
-                                               HorizontalAlignment="Center"/>
-                            </ItemsPanelTemplate>
-                        </GridView.ItemsPanel>
-                        
-                        <GridView.ItemTemplate>
-                            <DataTemplate>
-                                <Grid Width="280" Height="200" 
-                                      Margin="10"
-                                      Tapped="WallpaperGridItem_Tapped"
-                                      DoubleTapped="WallpaperItem_DoubleTapped"
-                                      RightTapped="WallpaperGridItem_RightTapped"
-                                      PointerEntered="WallpaperGridItem_PointerEntered"
-                                      PointerExited="WallpaperGridItem_PointerExited"
-                                      RenderTransformOrigin="0.5,0.5">
-                                    <Grid.RenderTransform>
-                                        <ScaleTransform x:Name="gridScale" ScaleX="1" ScaleY="1"/>
-                                    </Grid.RenderTransform>
-                                    
-                                    <!-- 右键菜单 -->
-                                    <Grid.ContextFlyout>
-                                        <MenuFlyout Opening="ContextMenu_Opening">
-                                            <MenuFlyoutItem Text="设为桌面背景" Click="SetAsDesktopWallpaper_Click">
-                                                <MenuFlyoutItem.Icon>
-                                                    <FontIcon Glyph="&#xE91B;" />
-                                                </MenuFlyoutItem.Icon>
-                                            </MenuFlyoutItem>
-                                            <MenuFlyoutItem Text="设为锁屏界面" Click="SetAsLockScreen_Click">
-                                                <MenuFlyoutItem.Icon>
-                                                    <FontIcon Glyph="&#xE72E;" />
-                                                </MenuFlyoutItem.Icon>
-                                            </MenuFlyoutItem>
-                                            <MenuFlyoutSeparator />
-                                            <MenuFlyoutSubItem Text="桌面背景定时切换">
-                                                <MenuFlyoutSubItem.Icon>
-                                                    <FontIcon Glyph="&#xE916;" />
-                                                </MenuFlyoutSubItem.Icon>
-                                                <MenuFlyoutItem Text="关闭自动更换" Tag="0" Click="SetDesktopTimerInterval_Click" />
-                                                <MenuFlyoutSeparator />
-                                                <MenuFlyoutItem Text="每1分钟" Tag="1" Click="SetDesktopTimerInterval_Click" />
-                                                <MenuFlyoutItem Text="每10分钟" Tag="10" Click="SetDesktopTimerInterval_Click" />
-                                                <MenuFlyoutItem Text="每30分钟" Tag="30" Click="SetDesktopTimerInterval_Click" />
-                                                <MenuFlyoutSeparator />
-                                                <MenuFlyoutItem Text="每1小时" Tag="60" Click="SetDesktopTimerInterval_Click" />
-                                                <MenuFlyoutItem Text="每2小时" Tag="120" Click="SetDesktopTimerInterval_Click" />
-                                                <MenuFlyoutItem Text="每6小时" Tag="360" Click="SetDesktopTimerInterval_Click" />
-                                                <MenuFlyoutItem Text="每12小时" Tag="720" Click="SetDesktopTimerInterval_Click" />
-                                                <MenuFlyoutItem Text="每1天" Tag="1440" Click="SetDesktopTimerInterval_Click" />
-                                            </MenuFlyoutSubItem>
-                                            <MenuFlyoutSubItem Text="锁屏界面定时切换">
-                                                <MenuFlyoutSubItem.Icon>
-                                                    <FontIcon Glyph="&#xE916;" />
-                                                </MenuFlyoutSubItem.Icon>
-                                                <MenuFlyoutItem Text="关闭自动更换" Tag="0" Click="SetLockScreenTimerInterval_Click" />
-                                                <MenuFlyoutSeparator />
-                                                <MenuFlyoutItem Text="每1分钟" Tag="1" Click="SetLockScreenTimerInterval_Click" />
-                                                <MenuFlyoutItem Text="每10分钟" Tag="10" Click="SetLockScreenTimerInterval_Click" />
-                                                <MenuFlyoutItem Text="每30分钟" Tag="30" Click="SetLockScreenTimerInterval_Click" />
-                                                <MenuFlyoutSeparator />
-                                                <MenuFlyoutItem Text="每1小时" Tag="60" Click="SetLockScreenTimerInterval_Click" />
-                                                <MenuFlyoutItem Text="每2小时" Tag="120" Click="SetLockScreenTimerInterval_Click" />
-                                                <MenuFlyoutItem Text="每6小时" Tag="360" Click="SetLockScreenTimerInterval_Click" />
-                                                <MenuFlyoutItem Text="每12小时" Tag="720" Click="SetLockScreenTimerInterval_Click" />
-                                                <MenuFlyoutItem Text="每1天" Tag="1440" Click="SetLockScreenTimerInterval_Click" />
-                                            </MenuFlyoutSubItem>
-                                            <MenuFlyoutSeparator />
-                                            <MenuFlyoutItem x:Name="GridStartupMenuItem" Text="开机启动" Click="ToggleStartup_Click">
-                                                <MenuFlyoutItem.Icon>
-                                                    <FontIcon Glyph="&#xE7B7;" />
-                                                </MenuFlyoutItem.Icon>
-                                            </MenuFlyoutItem>
-                                            <MenuFlyoutSeparator />
-                                            <MenuFlyoutItem x:Name="GridTaskbarBlurMenuItem" Text="任务栏透明" Click="ToggleTaskbarBlur_Click">
-                                                <MenuFlyoutItem.Icon>
-                                                    <FontIcon Glyph="&#xF13A;" />
-                                                </MenuFlyoutItem.Icon>
-                                            </MenuFlyoutItem>
-                                            <MenuFlyoutSeparator />
-                                            <MenuFlyoutItem Text="下载此图片" Click="DownloadImage_Click">
-                                                <MenuFlyoutItem.Icon>
-                                                    <FontIcon Glyph="&#xE896;" />
-                                                </MenuFlyoutItem.Icon>
-                                            </MenuFlyoutItem>
-                                            <MenuFlyoutItem x:Name="GridClearCacheMenuItem" Text="清理缓存" Click="ClearCache_Click" Visibility="Collapsed">
-                                                <MenuFlyoutItem.Icon>
-                                                    <FontIcon Glyph="&#xE74D;" />
-                                                </MenuFlyoutItem.Icon>
-                                            </MenuFlyoutItem>
-                                        </MenuFlyout>
-                                    </Grid.ContextFlyout>
-                                    
-                                    <!-- 纯图片卡片：圆角交给 Border 裁切，图片铺满，不再叠标题和来源 -->
-                                    <Border x:Name="CardBorder"
-                                            CornerRadius="12"
-                                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
-                                        <Image Stretch="UniformToFill" 
-                                               Loaded="GridImage_Loaded"
-                                               ImageOpened="GridImage_Opened"/>
-                                    </Border>
-                                </Grid>
-                            </DataTemplate>
-                        </GridView.ItemTemplate>
-                    </GridView>
-                    
-                    <!-- 底部加载提示 -->
+            <!-- 壁纸网格：GridView 自己就是滚动容器。
+                 外面再套一层 ScrollViewer 会让它在竖直方向拿到"无限高"的测量约束，
+                 ItemsWrapGrid 只能把所有卡片一次性全部实例化、所有位图全部解码常驻，
+                 虚拟化彻底失效 —— 滚动得越久内存越涨，这是主要的吃内存来源。 -->
+            <GridView x:Name="WallpaperGridView"
+                      Visibility="Collapsed"
+                      SelectionMode="None"
+                      IsItemClickEnabled="False"
+                      Padding="20"
+                      ScrollViewer.VerticalScrollBarVisibility="Auto"
+                      Loaded="WallpaperGridView_Loaded">
+                <GridView.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <ItemsWrapGrid Orientation="Horizontal" 
+                                       HorizontalAlignment="Center"/>
+                    </ItemsPanelTemplate>
+                </GridView.ItemsPanel>
+                
+                <GridView.ItemTemplate>
+                    <DataTemplate>
+                        <Grid Width="280" Height="200" 
+                              Margin="10"
+                              Tapped="WallpaperGridItem_Tapped"
+                              DoubleTapped="WallpaperItem_DoubleTapped"
+                              RightTapped="WallpaperGridItem_RightTapped"
+                              PointerEntered="WallpaperGridItem_PointerEntered"
+                              PointerExited="WallpaperGridItem_PointerExited"
+                              RenderTransformOrigin="0.5,0.5">
+                            <Grid.RenderTransform>
+                                <ScaleTransform x:Name="gridScale" ScaleX="1" ScaleY="1"/>
+                            </Grid.RenderTransform>
+                            
+                            <!-- 右键菜单 -->
+                            <Grid.ContextFlyout>
+                                <MenuFlyout Opening="ContextMenu_Opening">
+                                    <MenuFlyoutItem Text="设为桌面背景" Click="SetAsDesktopWallpaper_Click">
+                                        <MenuFlyoutItem.Icon>
+                                            <FontIcon Glyph="&#xE91B;" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                    <MenuFlyoutItem Text="设为锁屏界面" Click="SetAsLockScreen_Click">
+                                        <MenuFlyoutItem.Icon>
+                                            <FontIcon Glyph="&#xE72E;" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                    <MenuFlyoutSeparator />
+                                    <MenuFlyoutSubItem Text="桌面背景定时切换">
+                                        <MenuFlyoutSubItem.Icon>
+                                            <FontIcon Glyph="&#xE916;" />
+                                        </MenuFlyoutSubItem.Icon>
+                                        <MenuFlyoutItem Text="关闭自动更换" Tag="0" Click="SetDesktopTimerInterval_Click" />
+                                        <MenuFlyoutSeparator />
+                                        <MenuFlyoutItem Text="每1分钟" Tag="1" Click="SetDesktopTimerInterval_Click" />
+                                        <MenuFlyoutItem Text="每10分钟" Tag="10" Click="SetDesktopTimerInterval_Click" />
+                                        <MenuFlyoutItem Text="每30分钟" Tag="30" Click="SetDesktopTimerInterval_Click" />
+                                        <MenuFlyoutSeparator />
+                                        <MenuFlyoutItem Text="每1小时" Tag="60" Click="SetDesktopTimerInterval_Click" />
+                                        <MenuFlyoutItem Text="每2小时" Tag="120" Click="SetDesktopTimerInterval_Click" />
+                                        <MenuFlyoutItem Text="每6小时" Tag="360" Click="SetDesktopTimerInterval_Click" />
+                                        <MenuFlyoutItem Text="每12小时" Tag="720" Click="SetDesktopTimerInterval_Click" />
+                                        <MenuFlyoutItem Text="每1天" Tag="1440" Click="SetDesktopTimerInterval_Click" />
+                                    </MenuFlyoutSubItem>
+                                    <MenuFlyoutSubItem Text="锁屏界面定时切换">
+                                        <MenuFlyoutSubItem.Icon>
+                                            <FontIcon Glyph="&#xE916;" />
+                                        </MenuFlyoutSubItem.Icon>
+                                        <MenuFlyoutItem Text="关闭自动更换" Tag="0" Click="SetLockScreenTimerInterval_Click" />
+                                        <MenuFlyoutSeparator />
+                                        <MenuFlyoutItem Text="每1分钟" Tag="1" Click="SetLockScreenTimerInterval_Click" />
+                                        <MenuFlyoutItem Text="每10分钟" Tag="10" Click="SetLockScreenTimerInterval_Click" />
+                                        <MenuFlyoutItem Text="每30分钟" Tag="30" Click="SetLockScreenTimerInterval_Click" />
+                                        <MenuFlyoutSeparator />
+                                        <MenuFlyoutItem Text="每1小时" Tag="60" Click="SetLockScreenTimerInterval_Click" />
+                                        <MenuFlyoutItem Text="每2小时" Tag="120" Click="SetLockScreenTimerInterval_Click" />
+                                        <MenuFlyoutItem Text="每6小时" Tag="360" Click="SetLockScreenTimerInterval_Click" />
+                                        <MenuFlyoutItem Text="每12小时" Tag="720" Click="SetLockScreenTimerInterval_Click" />
+                                        <MenuFlyoutItem Text="每1天" Tag="1440" Click="SetLockScreenTimerInterval_Click" />
+                                    </MenuFlyoutSubItem>
+                                    <MenuFlyoutSeparator />
+                                    <MenuFlyoutItem x:Name="GridStartupMenuItem" Text="开机启动" Click="ToggleStartup_Click">
+                                        <MenuFlyoutItem.Icon>
+                                            <FontIcon Glyph="&#xE7B7;" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                    <MenuFlyoutSeparator />
+                                    <MenuFlyoutItem x:Name="GridTaskbarBlurMenuItem" Text="任务栏透明" Click="ToggleTaskbarBlur_Click">
+                                        <MenuFlyoutItem.Icon>
+                                            <FontIcon Glyph="&#xF13A;" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                    <MenuFlyoutSeparator />
+                                    <MenuFlyoutItem Text="下载此图片" Click="DownloadImage_Click">
+                                        <MenuFlyoutItem.Icon>
+                                            <FontIcon Glyph="&#xE896;" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                    <MenuFlyoutItem x:Name="GridClearCacheMenuItem" Text="清理缓存" Click="ClearCache_Click" Visibility="Collapsed">
+                                        <MenuFlyoutItem.Icon>
+                                            <FontIcon Glyph="&#xE74D;" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                </MenuFlyout>
+                            </Grid.ContextFlyout>
+                            
+                            <!-- 纯图片卡片：圆角交给 Border 裁切，图片铺满，不再叠标题和来源 -->
+                            <Border x:Name="CardBorder"
+                                    CornerRadius="12"
+                                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+                                <Image Stretch="UniformToFill" 
+                                       Loaded="GridImage_Loaded"
+                                       DataContextChanged="GridImage_DataContextChanged"
+                                       ImageOpened="GridImage_Opened"/>
+                            </Border>
+                        </Grid>
+                    </DataTemplate>
+                </GridView.ItemTemplate>
+
+                <!-- 底部加载提示放进 Footer：跟随内容滚到末尾，
+                     既保留"滚到底才看见"的原有效果，也不用在 GridView 外面再套容器 -->
+                <GridView.Footer>
                     <StackPanel x:Name="txtLoadingMore" 
                                 Visibility="Collapsed"
                                 HorizontalAlignment="Center"
@@ -290,23 +293,22 @@
                                 Orientation="Horizontal">
                         <ProgressRing IsActive="True" Width="24" Height="24"/>
                         <TextBlock Text="加载中..." 
-                                   FontSize="14"
+                                   FontSize="14" 
                                    VerticalAlignment="Center"
                                    Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"/>
                     </StackPanel>
-                </StackPanel>
-            </ScrollViewer>
+                </GridView.Footer>
+            </GridView>
             
-            <!-- 沉浸式浏览模式 -->
+            <!-- 沉浸式浏览模式。
+                 这里原来显式把 ItemsPanel 覆盖成 StackPanel，等于给 FlipView 关掉了虚拟化：
+                 每翻一页都新建一个图片容器、并且永远留在可视树里，图片解码后的位图
+                 也跟着常驻。改成用默认的 ItemsStackPanel（虚拟化），只保留当前页附近的容器。 -->
             <FlipView x:Name="ImmersiveFlipView"
                       Visibility="Visible"
                       PointerWheelChanged="ImmersiveFlipView_PointerWheelChanged"
+                      SelectionChanged="ImmersiveFlipView_SelectionChanged"
                       Background="{ThemeResource LayerFillColorDefaultBrush}">
-                <FlipView.ItemsPanel>
-                    <ItemsPanelTemplate>
-                        <StackPanel />
-                    </ItemsPanelTemplate>
-                </FlipView.ItemsPanel>
                 <FlipView.ItemTemplate>
                     <DataTemplate>
                         <Grid>
