@@ -2399,6 +2399,27 @@ namespace App1
         /// 切换任务栏档位：注入（第一次要等十几秒）→ 存设置 → 回读是否真的画上了。
         /// 面板里的单选和滑块都走这里。
         /// </summary>
+        /// <summary>
+        /// 把任务栏档位和两个浓度一次性写进设置。
+        /// 所有切档入口（单选、分档菜单、滑块）都必须走这里，
+        /// 以前有的分支只存浓度不存档位，重启就「变回关闭」。
+        /// </summary>
+        private void PersistTaskbarChoice(TaskbarEffect effect)
+        {
+            var service = (Application.Current as App)?.TaskbarAppearance;
+
+            _appSettings.TaskbarEffect = (int)effect;
+            _appSettings.IsTaskbarBlurEnabled = effect != TaskbarEffect.Off;
+
+            if (service != null)
+            {
+                _appSettings.TaskbarClearAlpha = service.ClearAlpha;
+                _appSettings.TaskbarAcrylicAlpha = service.AcrylicAlpha;
+            }
+
+            SettingsManager.SaveSettings(_appSettings);
+        }
+
         private async Task<bool> ApplyTaskbarEffectAsync(TaskbarEffect effect)
         {
             try
@@ -2412,15 +2433,18 @@ namespace App1
 
                 if (service.Current == effect)
                 {
+                    // 运行时已经是这一档（多半是启动时自动恢复的），但用户这次点选
+                    // 仍然要落盘，否则「启动恢复 + 再点同一档」不会留下任何记录。
+                    PersistTaskbarChoice(effect);
                     return true;
                 }
 
                 // 注入最长会等十几秒，扔到线程池上，别把界面卡住
                 var ok = await Task.Run(() => service.Apply(effect));
 
-                _appSettings.TaskbarEffect = (int)effect;
-                _appSettings.IsTaskbarBlurEnabled = effect != TaskbarEffect.Off;
-                SettingsManager.SaveSettings(_appSettings);
+                // 档位是用户意图，跟这次注入成不成功无关：失败也要记住，
+                // 下次启动再试，而不是把用户的选择悄悄丢掉。
+                PersistTaskbarChoice(effect);
 
                 if (effect == TaskbarEffect.Off)
                 {
@@ -2511,7 +2535,8 @@ namespace App1
             }
             else
             {
-                SaveTaskbarTint();
+                // 同一档只改浓度：档位也要一起存，别只写两个 alpha
+                PersistTaskbarChoice(effect);
             }
         }
 
@@ -2763,9 +2788,7 @@ namespace App1
                 return;
             }
 
-            _appSettings.TaskbarClearAlpha = service.ClearAlpha;
-            _appSettings.TaskbarAcrylicAlpha = service.AcrylicAlpha;
-            SettingsManager.SaveSettings(_appSettings);
+            PersistTaskbarChoice(service.Current);
         }
 
         /// <summary>
@@ -2968,10 +2991,18 @@ namespace App1
         {
             try
             {
-                var current = ((Application.Current as App)?.TaskbarAppearance?.Current
-                               ?? TaskbarEffect.Off).ToString();
+                // 以磁盘上的用户选择为准，不读 service.Current：
+                // 启动时注入是异步的（十几秒），那段时间 Current 还是 Off，
+                // 菜单会显示「默认关闭」，看起来就像设置没记住。
+                var effect = (TaskbarEffect)_appSettings.TaskbarEffect;
+                var label = effect switch
+                {
+                    TaskbarEffect.Clear => "透明",
+                    TaskbarEffect.Acrylic => "亚克力",
+                    _ => "关闭",
+                };
 
-                SyncTaskbarRadioItems(menuFlyout.Items, current);
+                SyncTaskbarRadioItems(menuFlyout.Items, label);
             }
             catch (Exception ex)
             {
@@ -2979,21 +3010,21 @@ namespace App1
             }
         }
 
-        private static void SyncTaskbarRadioItems(IList<MenuFlyoutItemBase> items, string current)
+        private static void SyncTaskbarRadioItems(IList<MenuFlyoutItemBase> items, string label)
         {
             foreach (var item in items)
             {
                 if (item is Microsoft.UI.Xaml.Controls.MenuFlyoutSubItem subItem)
                 {
-                    SyncTaskbarRadioItems(subItem.Items, current);
-                    continue;
-                }
+                    // 二级菜单标题直接写明当前档位，一打开右键就能看见。
+                    // 现在的菜单项是普通 MenuFlyoutItem（Tag="1:64" 这种），
+                    // 没有可勾选的单选控件，靠标题表达最稳妥。
+                    if (subItem.Text.StartsWith("任务栏外观", StringComparison.Ordinal))
+                    {
+                        subItem.Text = $"任务栏外观（{label}）";
+                    }
 
-                if (item is RadioMenuFlyoutItem radio &&
-                    radio.Tag is string tag &&
-                    radio.GroupName == "TaskbarEffect")
-                {
-                    radio.IsChecked = string.Equals(tag, current, StringComparison.Ordinal);
+                    SyncTaskbarRadioItems(subItem.Items, label);
                 }
             }
         }
