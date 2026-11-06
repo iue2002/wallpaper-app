@@ -51,6 +51,7 @@
     <ClCompile Include="TapRuntime.cpp" />
     <ClCompile Include="TapSite.cpp" />
     <ClCompile Include="VisualTreeWatcher.cpp" />
+    <ClCompile Include="GaussianBlurEffect.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="TapGuids.h" />
