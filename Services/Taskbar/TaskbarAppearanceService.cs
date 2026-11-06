@@ -64,6 +64,7 @@ namespace App1.Services.Taskbar
         private IntPtr _module;
         private string? _modulePath;
         private string? _stagedDllPath;
+        private int _stageNonce;
         private uint _injectedPid;
         private DateTime _lastInjectAttempt = DateTime.MinValue;
         private int _consecutiveFailures;
@@ -299,6 +300,15 @@ namespace App1.Services.Taskbar
 
                 var info = new FileInfo(source);
                 var tag = $"{info.Length:x}_{info.LastWriteTimeUtc.Ticks:x}";
+
+                // 失败重试时必须换一个新文件名。
+                // 原因：DLL 一旦被 LoadLibrary 进 explorer，同一个路径再挂 hook 不会
+                // 重新跑 DllMain —— 安装线程只在第一次创建，死了就是死了，
+                // 后面每次重试都只是在等一个永远不会来的就绪事件。
+                if (_stageNonce > 0)
+                {
+                    tag += $".{_stageNonce}";
+                }
                 var dir = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     "XiaoKWallpaper",
@@ -407,6 +417,12 @@ namespace App1.Services.Taskbar
             {
                 LastError = "注入超时（XAML 诊断没有响应）";
                 App1.Services.Diagnostics.AppLog.Write("[任务栏] " + LastError);
+
+                // 这个模块已经进了 explorer 但没装成（安装线程只在 DllMain 里起一次），
+                // 同一个路径重试毫无意义，下一次换一个新文件名重新来。
+                _stageNonce++;
+                _stagedDllPath = null;
+
                 return false;
             }
 
