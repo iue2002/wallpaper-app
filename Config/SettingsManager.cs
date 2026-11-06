@@ -105,5 +105,10 @@ namespace App1.Config
 
         // 0=关闭 1=透明 2=亚克力，对应 App1.Services.Taskbar.TaskbarEffect
         public int TaskbarEffect { get; set; } = 0;
+
+        // 任务栏着色的不透明度，0-255（滑块上是 0-100%）。
+        // 透明默认 0（完全透明），亚克力默认 64（25% 黑），偏了随时用菜单里的滑块调。
+        public int TaskbarClearAlpha { get; set; } = 0;
+        public int TaskbarAcrylicAlpha { get; set; } = 64;
     }
 }

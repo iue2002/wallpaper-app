@@ -246,6 +246,7 @@ namespace App1
             // 任务栏外观属于后台能力：主窗口关掉之后还得留着，所以放在这一层，
             // 主窗口只负责改档位。
             _taskbarAppearance = new TaskbarAppearanceService();
+            _taskbarAppearance.InitializeTint(settings.TaskbarClearAlpha, settings.TaskbarAcrylicAlpha);
             var taskbarEffect = (TaskbarEffect)settings.TaskbarEffect;
             if (taskbarEffect != TaskbarEffect.Off)
             {
