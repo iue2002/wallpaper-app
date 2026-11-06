@@ -2431,6 +2431,26 @@ namespace App1
 
         private void OpenTaskbarPanel_Click(object sender, RoutedEventArgs e)
         {
+            ShowTaskbarPanel(sender as FrameworkElement);
+        }
+
+        private void TaskbarAppearanceItem_PointerEntered(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+        {
+            if (_taskbarPanelFlyout?.IsOpen == true)
+            {
+                return;
+            }
+
+            ShowTaskbarPanel(sender as FrameworkElement);
+        }
+
+        /// <summary>
+        /// 贴着菜单项展开面板：左上角对齐到菜单项的右侧，看起来就是一个展开的子菜单。
+        /// 菜单项本身放不下滑块（MenuFlyout 只接受菜单项），所以内容用 Flyout 承载，
+        /// 位置由锚点算出来，而不是飘在窗口中间。
+        /// </summary>
+        private void ShowTaskbarPanel(FrameworkElement? anchor)
+        {
             var service = (Application.Current as App)?.TaskbarAppearance;
             if (service == null)
             {
@@ -2452,16 +2472,34 @@ namespace App1
             _taskbarAcrylicPercent!.Text = $"{(int)_taskbarAcrylicSlider.Value}%";
             _taskbarPanelSyncing = false;
 
+            var position = new Windows.Foundation.Point(
+                Math.Max(24, WindowRoot.ActualWidth / 2 - 175),
+                Math.Max(60, WindowRoot.ActualHeight / 2 - 110));
+
+            if (anchor != null)
+            {
+                try
+                {
+                    var transform = anchor.TransformToVisual(null);
+                    var point = transform.TransformPoint(
+                        new Windows.Foundation.Point(anchor.ActualWidth + 4, 0));
+                    position = new Windows.Foundation.Point(
+                        Math.Max(8, point.X), Math.Max(8, point.Y - 12));
+                }
+                catch
+                {
+                    // 拿不到菜单位置就用居中兜底
+                }
+            }
+
             // 菜单项点击后菜单自己会关，light-dismiss 会把刚弹的浮层一起带关，
             // 投递到消息队列延后一帧再弹
             DispatcherQueue.TryEnqueue(() =>
             {
                 _taskbarPanelFlyout!.ShowAt(WindowRoot, new FlyoutShowOptions
                 {
-                    Placement = FlyoutPlacementMode.Bottom,
-                    Position = new Windows.Foundation.Point(
-                        Math.Max(24, WindowRoot.ActualWidth / 2 - 175),
-                        Math.Max(60, WindowRoot.ActualHeight / 2 - 110)),
+                    Placement = FlyoutPlacementMode.Right,
+                    Position = position,
                 });
             });
         }

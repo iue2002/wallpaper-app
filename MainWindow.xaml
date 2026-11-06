@@ -250,7 +250,7 @@
                                         </MenuFlyoutItem.Icon>
                                     </MenuFlyoutItem>
                                     <MenuFlyoutSeparator />
-                                    <MenuFlyoutItem Text="任务栏外观…" Click="OpenTaskbarPanel_Click">
+                                    <MenuFlyoutItem Text="任务栏外观" Click="OpenTaskbarPanel_Click" PointerEntered="TaskbarAppearanceItem_PointerEntered">
                                         <MenuFlyoutItem.Icon>
                                             <FontIcon Glyph="&#xF13A;" />
                                         </MenuFlyoutItem.Icon>
@@ -386,7 +386,7 @@
                                             </MenuFlyoutItem.Icon>
                                         </MenuFlyoutItem>
                                         <MenuFlyoutSeparator />
-                                        <MenuFlyoutItem Text="任务栏外观…" Click="OpenTaskbarPanel_Click">
+                                        <MenuFlyoutItem Text="任务栏外观" Click="OpenTaskbarPanel_Click" PointerEntered="TaskbarAppearanceItem_PointerEntered">
                                             <MenuFlyoutItem.Icon>
                                                 <FontIcon Glyph="&#xF13A;" />
                                             </MenuFlyoutItem.Icon>

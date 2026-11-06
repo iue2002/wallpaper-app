@@ -25,18 +25,23 @@ namespace TapRuntime
 		g_mapping = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, kSharedName);
 		if (!g_mapping)
 		{
+			TapLog(L"[tap] OpenFileMapping 失败，错误码=%lu，名字=%s", GetLastError(), kSharedName);
 			return false;
 		}
 
 		g_state = static_cast<TapSharedState*>(MapViewOfFile(g_mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(TapSharedState)));
 		if (!g_state)
 		{
+			TapLog(L"[tap] MapViewOfFile 失败，错误码=%lu", GetLastError());
 			return false;
 		}
 
 		if (g_state->Size != sizeof(TapSharedState))
 		{
-			// 结构对不上就别动，免得写到别人的内存布局上
+			// 结构对不上就别动，免得写到别人的内存布局上。
+			// 典型成因：explorer 里还钉着旧版本的 TAP，共享区被旧结构初始化过。
+			TapLog(L"[tap] 共享结构不匹配：对端 Size=%d 本模块 sizeof=%zu，放弃安装",
+				g_state->Size, sizeof(TapSharedState));
 			return false;
 		}
 

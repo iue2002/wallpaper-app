@@ -34,9 +34,15 @@ namespace
 	// 所以放在独立线程里做，DllMain 里不能干这种活。
 	DWORD WINAPI InstallThread(void*)
 	{
+		// 先无条件打开日志：下面任何一步失败都要留下痕迹。
+		// 之前这里是在 Initialize 成功之后才根据 DebugLog 开启，
+		// 结果"共享内存没打开"这种早期失败一个字都不写，只能看到宿主干等超时。
+		TapLogEnable(true);
+		TapLog(L"[tap] 进入安装线程 pid=%lu", GetCurrentProcessId());
+
 		if (!TapRuntime::Initialize())
 		{
-			TapLog(L"[tap] 打开共享内存失败，放弃安装");
+			TapLog(L"[tap] 初始化共享内存失败，放弃安装");
 			return 1;
 		}
 
