@@ -35,7 +35,11 @@ struct GaussianBlurEffect : winrt::implements<GaussianBlurEffect,
 	HRESULT __stdcall GetSource(UINT index, awge::IGraphicsEffectSource** source) noexcept override;
 	HRESULT __stdcall GetSourceCount(UINT* count) noexcept override;
 
+	// D2D1GaussianBlur 一共三个属性，必须全部报出来：
+	// compositor 建工厂时会按顺序挨个问 0/1/2，少一个就整体 E_INVALIDARG。
 	float BlurAmount = 12.0f;
+	uint32_t Optimization = 1;   // D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED
+	uint32_t BorderMode = 1;     // D2D1_BORDER_MODE_SOFT
 	wge::IGraphicsEffectSource Source{ nullptr };
 
 private:
