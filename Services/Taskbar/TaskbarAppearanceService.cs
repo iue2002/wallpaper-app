@@ -168,6 +168,34 @@ namespace App1.Services.Taskbar
             AcrylicAlpha = Math.Clamp(acrylicAlpha, 0, 255);
         }
 
+        /// <summary>菜单里直接选某一档的浓度（0-255）。</summary>
+        public void SetTint(TaskbarEffect effect, int alpha)
+        {
+            alpha = Math.Clamp(alpha, 0, 255);
+
+            lock (_gate)
+            {
+                switch (effect)
+                {
+                    case TaskbarEffect.Clear:
+                        ClearAlpha = alpha;
+                        break;
+
+                    case TaskbarEffect.Acrylic:
+                        AcrylicAlpha = alpha;
+                        break;
+
+                    default:
+                        return;
+                }
+
+                if (Current == effect && _view != null)
+                {
+                    PublishMode(Current);
+                }
+            }
+        }
+
         /// <summary>
         /// 拖滑块时实时改浓度：只重写共享内存再敲一下事件，不重新注入、不碰 explorer，
         /// 所以可以边拖边看。档位是「关闭」时没有可调的对象，直接忽略。

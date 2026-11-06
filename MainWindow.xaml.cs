@@ -2431,25 +2431,52 @@ namespace App1
 
         private void OpenTaskbarPanel_Click(object sender, RoutedEventArgs e)
         {
-            ShowTaskbarPanel(sender as FrameworkElement);
+            ShowTaskbarPanel(null, sender as FrameworkElement);
         }
 
-        private void TaskbarAppearanceItem_PointerEntered(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+        /// <summary>
+        /// 二级菜单里点了某个浓度档：Tag 形如 "1:64"（档位:alpha）。
+        /// 先把浓度定下来再切档，切的时候 Apply 会带着它一起上色。
+        /// </summary>
+        private async void SetTaskbarTint_Click(object sender, RoutedEventArgs e)
         {
-            if (_taskbarPanelFlyout?.IsOpen == true)
+            if (sender is not FrameworkElement element || element.Tag is not string tag)
             {
                 return;
             }
 
-            ShowTaskbarPanel(sender as FrameworkElement);
+            var parts = tag.Split(':');
+            if (parts.Length != 2 ||
+                !int.TryParse(parts[0], out var mode) ||
+                !int.TryParse(parts[1], out var alpha))
+            {
+                return;
+            }
+
+            var effect = (TaskbarEffect)mode;
+            var service = (Application.Current as App)?.TaskbarAppearance;
+            if (service == null)
+            {
+                ShowToast("任务栏服务未初始化", isSuccess: false);
+                return;
+            }
+
+            service.SetTint(effect, alpha);
+
+            if (service.Current != effect)
+            {
+                await ApplyTaskbarEffectAsync(effect);
+            }
+            else
+            {
+                SaveTaskbarTint();
+            }
         }
 
         /// <summary>
-        /// 贴着菜单项展开面板：左上角对齐到菜单项的右侧，看起来就是一个展开的子菜单。
-        /// 菜单项本身放不下滑块（MenuFlyout 只接受菜单项），所以内容用 Flyout 承载，
-        /// 位置由锚点算出来，而不是飘在窗口中间。
+        /// 在鼠标旁边弹出任务栏外观面板（菜单项位置兜底）。
         /// </summary>
-        private void ShowTaskbarPanel(FrameworkElement? anchor)
+        private void ShowTaskbarPanel(Windows.Foundation.Point? at, FrameworkElement? anchor)
         {
             var service = (Application.Current as App)?.TaskbarAppearance;
             if (service == null)
@@ -2472,25 +2499,35 @@ namespace App1
             _taskbarAcrylicPercent!.Text = $"{(int)_taskbarAcrylicSlider.Value}%";
             _taskbarPanelSyncing = false;
 
+            // 默认贴在鼠标右侧；拿不到鼠标位置就用菜单项坐标兜底
             var position = new Windows.Foundation.Point(
-                Math.Max(24, WindowRoot.ActualWidth / 2 - 175),
+                Math.Max(24, WindowRoot.ActualWidth / 2 - 160),
                 Math.Max(60, WindowRoot.ActualHeight / 2 - 110));
 
-            if (anchor != null)
+            if (at is { } point)
+            {
+                position = new Windows.Foundation.Point(point.X + 10, point.Y - 26);
+            }
+            else if (anchor != null)
             {
                 try
                 {
-                    var transform = anchor.TransformToVisual(null);
-                    var point = transform.TransformPoint(
-                        new Windows.Foundation.Point(anchor.ActualWidth + 4, 0));
-                    position = new Windows.Foundation.Point(
-                        Math.Max(8, point.X), Math.Max(8, point.Y - 12));
+                    var transform = anchor.TransformToVisual(WindowRoot);
+                    var anchorPoint = transform.TransformPoint(
+                        new Windows.Foundation.Point(anchor.ActualWidth + 6, 0));
+                    position = new Windows.Foundation.Point(anchorPoint.X, anchorPoint.Y - 12);
                 }
                 catch
                 {
-                    // 拿不到菜单位置就用居中兜底
                 }
             }
+
+            // 别超出窗口
+            var maxX = Math.Max(8, WindowRoot.ActualWidth - 340 - 12);
+            var maxY = Math.Max(8, WindowRoot.ActualHeight - 240 - 12);
+            position = new Windows.Foundation.Point(
+                Math.Clamp(position.X, 8, maxX),
+                Math.Clamp(position.Y, 8, maxY));
 
             // 菜单项点击后菜单自己会关，light-dismiss 会把刚弹的浮层一起带关，
             // 投递到消息队列延后一帧再弹
@@ -2498,7 +2535,7 @@ namespace App1
             {
                 _taskbarPanelFlyout!.ShowAt(WindowRoot, new FlyoutShowOptions
                 {
-                    Placement = FlyoutPlacementMode.Right,
+                    Placement = FlyoutPlacementMode.Bottom,
                     Position = position,
                 });
             });
