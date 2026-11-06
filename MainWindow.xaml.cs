@@ -2404,6 +2404,7 @@ namespace App1
         }
 
         private Flyout? _taskbarTintFlyout;
+        private TextBlock? _taskbarTintTitleText;
         private Slider? _taskbarTintSlider;
         private TextBlock? _taskbarTintValueText;
         private TextBlock? _taskbarTintHintText;
@@ -2438,6 +2439,9 @@ namespace App1
             _taskbarTintSyncing = false;
 
             _taskbarTintValueText!.Text = $"浓度：{(int)_taskbarTintSlider.Value}%";
+            _taskbarTintTitleText!.Text = service.Current == TaskbarEffect.Clear
+                ? "任务栏浓度 · 透明"
+                : "任务栏浓度 · 亚克力";
             _taskbarTintHintText!.Text = service.Current == TaskbarEffect.Clear
                 ? "透明模式：0 为完全透明，数值越大越接近不透明的黑。"
                 : "亚克力模式：数值越大，磨砂上的黑色着色越重；0 就是纯磨砂。";
@@ -2483,16 +2487,18 @@ namespace App1
                 MaxWidth = 280,
             };
 
+            _taskbarTintTitleText = new TextBlock
+            {
+                Text = "任务栏浓度",
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            };
+
             var panel = new StackPanel
             {
                 Padding = new Thickness(18, 14, 18, 14),
                 Spacing = 2,
             };
-            panel.Children.Add(new TextBlock
-            {
-                Text = "任务栏浓度",
-                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            });
+            panel.Children.Add(_taskbarTintTitleText);
             panel.Children.Add(_taskbarTintValueText);
             panel.Children.Add(_taskbarTintSlider);
             panel.Children.Add(_taskbarTintHintText);
@@ -2603,6 +2609,9 @@ namespace App1
                     // 更新任务栏透明菜单项状态
                     UpdateTaskbarBlurMenuItemStatus(menuFlyout);
 
+                    // 浓度滑块项：没开档位置灰，开了把当前百分比写进标题
+                    UpdateTaskbarTintMenuItemStatus(menuFlyout);
+
                     // 更新定时切换菜单项状态
                     UpdateTimerMenuItemStatus(menuFlyout);
                 }
@@ -2610,6 +2619,57 @@ namespace App1
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[UI] 右键菜单打开失败: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 刷新「调节浓度…」：没开档位时置灰，开了就把当前百分比写进标题，
+        /// 免得用户点进去才知道现在是多少。
+        ///
+        /// 只能按文字找：XAML 编译器不会给 MenuFlyout 里的元素生成 x:Name 字段
+        /// （写了也是编译不过的），菜单项只能在运行时遍历出来。
+        /// </summary>
+        private void UpdateTaskbarTintMenuItemStatus(MenuFlyout menuFlyout)
+        {
+            try
+            {
+                var service = (Application.Current as App)?.TaskbarAppearance;
+                var enabled = service != null && service.Current != TaskbarEffect.Off;
+                var percent = service == null
+                    ? 0
+                    : (int)Math.Round(service.CurrentTintAlpha * 100.0 / 255.0);
+                var text = enabled ? $"调节浓度（{percent}%）…" : "调节浓度…";
+
+                foreach (var item in EnumerateMenuItems(menuFlyout.Items))
+                {
+                    if (item is MenuFlyoutItem menuItem &&
+                        menuItem.Text != null &&
+                        menuItem.Text.StartsWith("调节浓度", StringComparison.Ordinal))
+                    {
+                        menuItem.IsEnabled = enabled;
+                        menuItem.Text = text;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[UI] 更新浓度菜单项失败: {ex.Message}");
+            }
+        }
+
+        private static IEnumerable<MenuFlyoutItemBase> EnumerateMenuItems(IEnumerable<MenuFlyoutItemBase> items)
+        {
+            foreach (var item in items)
+            {
+                yield return item;
+
+                if (item is MenuFlyoutSubItem sub)
+                {
+                    foreach (var child in EnumerateMenuItems(sub.Items))
+                    {
+                        yield return child;
+                    }
+                }
             }
         }
 
