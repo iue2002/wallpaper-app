@@ -144,27 +144,65 @@ namespace
 	DWORD WINAPI IpcThreadProc(void*)
 	{
 		HANDLE owner = nullptr;
-		if (g_state && g_state->OwnerPid != 0)
-		{
-			// 宿主进程一退，把任务栏还原回去，免得留下一个透明的残局
-			owner = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(g_state->OwnerPid));
-		}
+		DWORD boundPid = 0;
 
-		TapLog(L"[tap] IPC 线程启动，宿主 pid=%ld 句柄=%s",
-			g_state ? g_state->OwnerPid : 0, owner ? L"有" : L"无");
+		// 宿主可能换过进程（托盘退出后重新打开），每次收到命令都要重新核对 OwnerPid。
+		auto BindOwner = [&]()
+		{
+			const DWORD pid = g_state ? static_cast<DWORD>(g_state->OwnerPid) : 0;
+			if (pid == 0 || pid == boundPid)
+			{
+				return;
+			}
+
+			if (owner)
+			{
+				CloseHandle(owner);
+				owner = nullptr;
+			}
+
+			owner = OpenProcess(SYNCHRONIZE, FALSE, pid);
+			boundPid = pid;
+			TapLog(L"[tap] 绑定宿主 pid=%lu 句柄=%s", pid, owner ? L"有" : L"无");
+		};
+
+		BindOwner();
+		TapLog(L"[tap] IPC 线程启动，宿主 pid=%lu", boundPid);
 
 		for (;;)
 		{
 			HANDLE handles[2] = { g_command, owner };
 			const DWORD count = owner ? 2 : 1;
-			const DWORD result = WaitForMultipleObjects(count, handles, FALSE, 5000);
+			const DWORD result = WaitForMultipleObjects(count, handles, FALSE, 1000);
+
+			// 心跳写系统启动以来的毫秒数（GetTickCount，跨进程一致）。
+			// 宿主读一次就能算出「多久没跳了」，不用等两轮采样，也就不会卡住启动。
+			if (g_state)
+			{
+				InterlockedExchange(&g_state->Heartbeat, static_cast<LONG>(GetTickCount()));
+			}
 
 			if (owner && result == WAIT_OBJECT_0 + 1)
 			{
-				TapLog(L"[tap] 宿主进程已退出，还原任务栏");
+				// 关键：这里绝对不能 break。
+				//
+				// DLL 一旦被 XAML 诊断加载就永久钉在 explorer 里（Windows 不会自动卸载）。
+				// 旧版在这里退出 IPC 线程，结果模块还在、却没人再听命令事件；
+				// 下一次启动挂同一个路径的 hook，Windows 也不会重跑 DllMain，
+				// 于是只能干等就绪事件超时 —— 必须重启资源管理器才能恢复。
+				//
+				// 正确做法是「还原外观 + 解绑宿主 + 继续待命」，等下一个宿主重连。
+				TapLog(L"[tap] 宿主进程已退出，还原任务栏并转入待命");
 				TapRuntime::ApplyAsync(kModeRestore, 0);
-				Sleep(300);
-				break;
+				if (g_state)
+				{
+					InterlockedExchange(&g_state->OwnerPid, 0);
+				}
+
+				CloseHandle(owner);
+				owner = nullptr;
+				boundPid = 0;
+				continue;
 			}
 
 			if (result == WAIT_OBJECT_0)
@@ -174,6 +212,7 @@ namespace
 					break;
 				}
 
+				BindOwner();
 				TapLogEnable(g_state->DebugLog == 1);
 				TapRuntime::ApplyAsync(g_state->Mode, g_state->Color);
 				continue;
@@ -183,6 +222,8 @@ namespace
 			{
 				break;
 			}
+
+			// WAIT_TIMEOUT：什么都不做，下一轮继续刷心跳
 		}
 
 		if (owner)

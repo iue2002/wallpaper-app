@@ -104,16 +104,21 @@ namespace App1.Services.Taskbar
         }
 
         /// <summary>
-        /// 商店打包版不做进程注入：MSIX 审核对往 explorer 注入 DLL 这类行为不友好。
-        /// 如果以后确认要放到商店版，把这里改成恒 true 即可。
+        /// 打包（MSIX）版和桌面版一样启用。
+        ///
+        /// 之前这里按 !IsPackaged 把商店版挡掉了，理由是猜「审核对注入不友好」——
+        /// 没有任何依据：TranslucentTB 本身就是 Microsoft Store 的 MSIX 应用，
+        /// 它就是以打包身份往 explorer 注入 ExplorerTAP.dll 正常工作的。
+        /// 清单里同样有 runFullTrust，和 explorer 同完整性级别，跨进程挂 hook 没有障碍。
+        /// 真正需要处理的是 MSIX 的 AppData 写入重定向，见 EnsureStagedDll()。
         /// </summary>
-        public static bool IsSupported => !StartupRegistrar.IsPackaged;
+        public static bool IsSupported => true;
 
         public bool Apply(TaskbarEffect effect)
         {
             if (!IsSupported)
             {
-                LastError = "商店版不支持任务栏透明（需要注入资源管理器），请用桌面版";
+                LastError = "此版本不支持任务栏外观";
                 return false;
             }
 
@@ -283,12 +288,20 @@ namespace App1.Services.Taskbar
                 _ready = new EventWaitHandle(false, EventResetMode.ManualReset, TapIpc.ReadyEventName);
                 _command = new EventWaitHandle(false, EventResetMode.AutoReset, TapIpc.CommandEventName);
 
-                Write(new TapSharedState
+                // 命名对象是会话级的：explorer 里常驻的 TAP 仍握着这块共享内存的句柄。
+                // 如果里面已经有合法结构，就说明可能是上一个宿主留下的待命 TAP，
+                // 绝对不能一把 Write 把 Status / Applied / Heartbeat / OwnerPid 抹掉，
+                // 否则宿主就没法判断该复用还是该重新注入了。
+                var existing = Read();
+                if (existing.Size != Marshal.SizeOf<TapSharedState>())
                 {
-                    Size = Marshal.SizeOf<TapSharedState>(),
-                    OwnerPid = Environment.ProcessId,
-                    DebugLog = 1,
-                });
+                    Write(new TapSharedState
+                    {
+                        Size = Marshal.SizeOf<TapSharedState>(),
+                        OwnerPid = Environment.ProcessId,
+                        DebugLog = 1,
+                    });
+                }
 
                 return true;
             }
@@ -337,12 +350,37 @@ namespace App1.Services.Taskbar
                 {
                     tag += $".{_stageNonce}";
                 }
-                var dir = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "XiaoKWallpaper",
-                    "TAP");
+                string dir;
+                if (StartupRegistrar.IsPackaged)
+                {
+                    // MSIX 会把写往 %LOCALAPPDATA% 的文件重定向到
+                    // %LOCALAPPDATA%\Packages\<包名>\LocalCache\Local\ —— 那是打包进程
+                    // 自己的虚拟视图，explorer（非打包进程）在真实路径上根本看不到文件。
+                    // ApplicationData.Current.TemporaryFolder 指向 …\TempState\，
+                    // 是真实文件系统路径且纯 ASCII，TranslucentTB 也把 ExplorerTAP.dll 放这里。
+                    try
+                    {
+                        dir = Path.Combine(
+                            Windows.Storage.ApplicationData.Current.TemporaryFolder.Path,
+                            "XiaoKWallpaper",
+                            "TAP");
+                    }
+                    catch (Exception ex)
+                    {
+                        LastError = "打包版取 TempState 失败: " + ex.Message;
+                        return null;
+                    }
+                }
+                else
+                {
+                    dir = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "XiaoKWallpaper",
+                        "TAP");
+                }
 
                 Directory.CreateDirectory(dir);
+                App1.Services.Diagnostics.AppLog.Write("[任务栏] 暂存目录：" + dir);
 
                 var target = Path.Combine(dir, $"ExplorerTap.{tag}.dll");
                 if (!File.Exists(target))
@@ -370,6 +408,52 @@ namespace App1.Services.Taskbar
             }
         }
 
+        /// <summary>
+        /// 探测 explorer 里是否已经有上次留下的、仍在待命的 TAP。
+        ///
+        /// 命中就跳过 SetWindowsHookEx：DLL 一旦加载就永久钉在 explorer 里，
+        /// 同一路径再挂 hook 不会重跑 DllMain，硬挂只会白等 20 秒超时。
+        /// 这就是「托盘退出 → 第二次打开透明失效 → 重启资源管理器才恢复」的根因。
+        /// </summary>
+        private bool TryReuseExistingTap(uint explorerPid)
+        {
+            try
+            {
+                if (_view == null)
+                {
+                    return false;
+                }
+
+                var state = Read();
+                if (state.Size != Marshal.SizeOf<TapSharedState>() ||
+                    state.Status != TapIpc.StatusReady ||
+                    state.OwnerPid != 0)
+                {
+                    // OwnerPid 被 DLL 清成 0 = 上一个宿主已退出、模块转入待命
+                    return false;
+                }
+
+                // 心跳是 DLL 写的 GetTickCount()，跨进程可比。5 秒没更新就说明
+                // 那是旧版 DLL（IPC 线程已经 break 了），必须走新文件名重新注入。
+                var age = unchecked((uint)Environment.TickCount - (uint)state.Heartbeat);
+                if (age > 5000)
+                {
+                    return false;
+                }
+
+                _injectedPid = explorerPid;
+                _ready?.Set();
+                LastError = null;
+                App1.Services.Diagnostics.AppLog.Write(
+                    $"[任务栏] 复用 explorer 里常驻的注入模块（心跳 {age}ms 前），pid={explorerPid}，跳过重新注入");
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private bool EnsureInjected()
         {
             var taskbar = TapIpc.FindWindowW(TapIpc.TaskbarClassName, null);
@@ -389,6 +473,14 @@ namespace App1.Services.Taskbar
             if (pid != 0 && pid == _injectedPid && _ready?.WaitOne(0) == true)
             {
                 // 已经挂在同一个 explorer 上
+                return true;
+            }
+
+            // 新进程启动时的关键一步：先探测 explorer 里活着的常驻 TAP。
+            // 命中就完全跳过 hook —— 不重跑 DllMain、不换 DLL 文件名，
+            // 也就不会再出现「第二次打开就超时」。
+            if (TryReuseExistingTap(pid))
+            {
                 return true;
             }
 

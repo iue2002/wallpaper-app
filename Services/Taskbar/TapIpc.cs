@@ -26,7 +26,8 @@ namespace App1.Services.Taskbar
         public int Status;     // 0=未就绪 1=已挂上 2=失败
         public int Applied;    // 实际生效的背景数量
         public int DebugLog;   // 1=让 DLL 写日志
-        public int Reserved;
+        /// <summary>DLL 写入的 GetTickCount()；宿主靠时间差判断常驻模块是否还活着。</summary>
+        public int Heartbeat;
     }
 
     /// <summary>

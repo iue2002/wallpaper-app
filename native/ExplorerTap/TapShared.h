@@ -13,7 +13,10 @@ struct TapSharedState
 	LONG Status;    // 0=未就绪 1=已挂上 2=失败
 	LONG Applied;   // 当前实际生效的任务栏背景数量（0 说明没找到 BackgroundFill）
 	LONG DebugLog;  // 1=允许写日志
-	LONG Reserved;
+	// DLL 的 IPC 线程每次循环写入 GetTickCount()（系统启动以来的毫秒数，跨进程一致）。
+	// 宿主读一次就能算出多久没跳，据此判断那个常驻模块是否还活着、能否复用。
+	// 结构大小仍是 32 字节，和旧版 DLL 二进制兼容（旧版这里是 Reserved，恒为 0）。
+	LONG Heartbeat;
 };
 
 // 命名对象都放在 Local\ 下：同一登录会话内可见，跨用户互不干扰。
