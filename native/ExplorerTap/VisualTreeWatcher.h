@@ -62,6 +62,10 @@ private:
 	void Register(InstanceHandle handle, const wchar_t* name, bool insideTaskbar);
 	void ApplyOne(Entry& entry, LONG mode, LONG color);
 
+	// 亚克力：往背景矩形上挂「模糊 + 着色」的合成子树。
+	// 失败返回 false（日志里会写明卡在哪一步），调用方退回纯色，不至于全透明。
+	bool TryApplyAcrylic(Entry& entry, const winrt::Windows::UI::Color& tint);
+
 	winrt::com_ptr<IXamlDiagnostics> m_diagnostics;
 	winrt::com_ptr<IVisualTreeService3> m_service;
 	winrt::Windows::System::DispatcherQueue m_queue{ nullptr };
