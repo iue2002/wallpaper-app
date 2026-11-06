@@ -250,20 +250,11 @@
                                         </MenuFlyoutItem.Icon>
                                     </MenuFlyoutItem>
                                     <MenuFlyoutSeparator />
-                                    <MenuFlyoutSubItem x:Name="GridTaskbarBlurMenuItem" Text="任务栏外观">
-                                        <MenuFlyoutSubItem.Icon>
+                                    <MenuFlyoutItem Text="任务栏外观…" Click="OpenTaskbarPanel_Click">
+                                        <MenuFlyoutItem.Icon>
                                             <FontIcon Glyph="&#xF13A;" />
-                                        </MenuFlyoutSubItem.Icon>
-                                        <RadioMenuFlyoutItem Text="关闭（系统默认）" Tag="0" GroupName="TaskbarEffect" Click="SetTaskbarEffect_Click" />
-                                        <RadioMenuFlyoutItem Text="透明" Tag="1" GroupName="TaskbarEffect" Click="SetTaskbarEffect_Click" />
-                                        <RadioMenuFlyoutItem Text="亚克力" Tag="2" GroupName="TaskbarEffect" Click="SetTaskbarEffect_Click" />
-                                        <MenuFlyoutSeparator />
-                                        <MenuFlyoutItem Text="调节浓度…" Click="AdjustTaskbarTint_Click">
-                                            <MenuFlyoutItem.Icon>
-                                                <FontIcon Glyph="&#xE713;" />
-                                            </MenuFlyoutItem.Icon>
-                                        </MenuFlyoutItem>
-                                    </MenuFlyoutSubItem>
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
                                     <MenuFlyoutSeparator />
                                     <MenuFlyoutItem Text="下载此图片" Click="DownloadImage_Click">
                                         <MenuFlyoutItem.Icon>
@@ -395,20 +386,11 @@
                                             </MenuFlyoutItem.Icon>
                                         </MenuFlyoutItem>
                                         <MenuFlyoutSeparator />
-                                        <MenuFlyoutSubItem x:Name="TaskbarBlurMenuItem" Text="任务栏外观">
-                                            <MenuFlyoutSubItem.Icon>
+                                        <MenuFlyoutItem Text="任务栏外观…" Click="OpenTaskbarPanel_Click">
+                                            <MenuFlyoutItem.Icon>
                                                 <FontIcon Glyph="&#xF13A;" />
-                                            </MenuFlyoutSubItem.Icon>
-                                            <RadioMenuFlyoutItem Text="关闭（系统默认）" Tag="0" GroupName="TaskbarEffect" Click="SetTaskbarEffect_Click" />
-                                            <RadioMenuFlyoutItem Text="透明" Tag="1" GroupName="TaskbarEffect" Click="SetTaskbarEffect_Click" />
-                                            <RadioMenuFlyoutItem Text="亚克力" Tag="2" GroupName="TaskbarEffect" Click="SetTaskbarEffect_Click" />
-                                            <MenuFlyoutSeparator />
-                                            <MenuFlyoutItem Text="调节浓度…" Click="AdjustTaskbarTint_Click">
-                                                <MenuFlyoutItem.Icon>
-                                                    <FontIcon Glyph="&#xE713;" />
-                                                </MenuFlyoutItem.Icon>
-                                            </MenuFlyoutItem>
-                                        </MenuFlyoutSubItem>
+                                            </MenuFlyoutItem.Icon>
+                                        </MenuFlyoutItem>
                                         <MenuFlyoutSeparator />
                                         <MenuFlyoutItem Text="下载此图片" Click="DownloadImage_Click">
                                             <MenuFlyoutItem.Icon>

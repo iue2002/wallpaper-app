@@ -2343,43 +2343,53 @@ namespace App1
         /// </summary>
         private async void SetTaskbarEffect_Click(object sender, RoutedEventArgs e)
         {
+            if (sender is not FrameworkElement element ||
+                element.Tag is not string tag ||
+                !int.TryParse(tag, out var mode))
+            {
+                return;
+            }
+
+            await ApplyTaskbarEffectAsync((TaskbarEffect)mode);
+        }
+
+        /// <summary>
+        /// 切换任务栏档位：注入（第一次要等十几秒）→ 存设置 → 回读是否真的画上了。
+        /// 面板里的单选和滑块都走这里。
+        /// </summary>
+        private async Task<bool> ApplyTaskbarEffectAsync(TaskbarEffect effect)
+        {
             try
             {
-                if (sender is not FrameworkElement element || element.Tag is not string tag)
-                {
-                    return;
-                }
-
-                if (!int.TryParse(tag, out var mode))
-                {
-                    return;
-                }
-
-                var effect = (TaskbarEffect)mode;
                 var service = (Application.Current as App)?.TaskbarAppearance;
                 if (service == null)
                 {
                     ShowToast("任务栏服务未初始化", isSuccess: false);
-                    return;
+                    return false;
+                }
+
+                if (service.Current == effect)
+                {
+                    return true;
                 }
 
                 // 注入最长会等十几秒，扔到线程池上，别把界面卡住
                 var ok = await Task.Run(() => service.Apply(effect));
 
-                _appSettings.TaskbarEffect = mode;
+                _appSettings.TaskbarEffect = (int)effect;
                 _appSettings.IsTaskbarBlurEnabled = effect != TaskbarEffect.Off;
                 SettingsManager.SaveSettings(_appSettings);
 
                 if (effect == TaskbarEffect.Off)
                 {
                     ShowToast(ok ? "已恢复任务栏默认外观" : (service.LastError ?? "恢复失败"), ok);
-                    return;
+                    return ok;
                 }
 
                 if (!ok)
                 {
                     ShowToast(service.LastError ?? "任务栏透明设置失败", isSuccess: false);
-                    return;
+                    return false;
                 }
 
                 // 注入成功不等于画上了：还要看 DLL 有没有在 explorer 里找到任务栏背景。
@@ -2395,28 +2405,31 @@ namespace App1
                 {
                     ShowToast("已注入资源管理器，但没找到任务栏背景（详见 tap.log）", isSuccess: false);
                 }
+
+                return true;
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[任务栏] 切换失败: {ex.Message}");
                 ShowToast("任务栏外观设置失败", isSuccess: false);
+                return false;
             }
         }
 
-        private Flyout? _taskbarTintFlyout;
-        private TextBlock? _taskbarTintTitleText;
-        private Slider? _taskbarTintSlider;
-        private TextBlock? _taskbarTintValueText;
-        private TextBlock? _taskbarTintHintText;
-        private bool _taskbarTintSyncing;
+        // ── 任务栏外观面板 ────────────────────────────────────────────────
+        // 一个面板三行：关 / 透明+滑块 / 亚克力+滑块。
+        // 左边单选 = 当前档位；拖某一档的滑块等于切到那一档，边拖边看效果。
+        private Flyout? _taskbarPanelFlyout;
+        private RadioButton? _taskbarOffRadio;
+        private RadioButton? _taskbarClearRadio;
+        private RadioButton? _taskbarAcrylicRadio;
+        private Slider? _taskbarClearSlider;
+        private Slider? _taskbarAcrylicSlider;
+        private TextBlock? _taskbarClearPercent;
+        private TextBlock? _taskbarAcrylicPercent;
+        private bool _taskbarPanelSyncing;
 
-        /// <summary>
-        /// 菜单「调节浓度…」：弹一个小浮层，里面一个滑块。
-        ///
-        /// 拖动只改共享内存里的 alpha 再敲一下事件，DLL 那边直接换画刷，
-        /// 不重新注入、不碰 explorer，所以可以边拖边看。
-        /// </summary>
-        private void AdjustTaskbarTint_Click(object sender, RoutedEventArgs e)
+        private void OpenTaskbarPanel_Click(object sender, RoutedEventArgs e)
         {
             var service = (Application.Current as App)?.TaskbarAppearance;
             if (service == null)
@@ -2425,102 +2438,204 @@ namespace App1
                 return;
             }
 
-            if (service.Current == TaskbarEffect.Off)
-            {
-                ShowToast("先选「透明」或「亚克力」，再调浓度", isSuccess: false);
-                return;
-            }
+            EnsureTaskbarPanel();
 
-            EnsureTaskbarTintFlyout();
+            // 把当前状态灌进面板，这一步不要触发应用
+            _taskbarPanelSyncing = true;
+            var effect = service.Current;
+            _taskbarOffRadio!.IsChecked = effect == TaskbarEffect.Off;
+            _taskbarClearRadio!.IsChecked = effect == TaskbarEffect.Clear;
+            _taskbarAcrylicRadio!.IsChecked = effect == TaskbarEffect.Acrylic;
+            _taskbarClearSlider!.Value = Math.Round(service.ClearAlpha * 100.0 / 255.0);
+            _taskbarAcrylicSlider!.Value = Math.Round(service.AcrylicAlpha * 100.0 / 255.0);
+            _taskbarClearPercent!.Text = $"{(int)_taskbarClearSlider.Value}%";
+            _taskbarAcrylicPercent!.Text = $"{(int)_taskbarAcrylicSlider.Value}%";
+            _taskbarPanelSyncing = false;
 
-            // 把当前档位的浓度同步到滑块上（这一步不要触发应用）
-            _taskbarTintSyncing = true;
-            _taskbarTintSlider!.Value = Math.Round(service.CurrentTintAlpha * 100.0 / 255.0);
-            _taskbarTintSyncing = false;
-
-            _taskbarTintValueText!.Text = $"浓度：{(int)_taskbarTintSlider.Value}%";
-            _taskbarTintTitleText!.Text = service.Current == TaskbarEffect.Clear
-                ? "任务栏浓度 · 透明"
-                : "任务栏浓度 · 亚克力";
-            _taskbarTintHintText!.Text = service.Current == TaskbarEffect.Clear
-                ? "透明模式：0 为完全透明，数值越大越接近不透明的黑。"
-                : "亚克力模式：数值越大，磨砂上的黑色着色越重；0 就是纯磨砂。";
-
-            // 菜单项点击后菜单会自己关，light-dismiss 有可能顺手把刚弹的浮层一起关掉。
-            // 投递到消息队列，等菜单收完再弹。
+            // 菜单项点击后菜单自己会关，light-dismiss 会把刚弹的浮层一起带关，
+            // 投递到消息队列延后一帧再弹
             DispatcherQueue.TryEnqueue(() =>
             {
-                _taskbarTintFlyout!.ShowAt(WindowRoot, new FlyoutShowOptions
+                _taskbarPanelFlyout!.ShowAt(WindowRoot, new FlyoutShowOptions
                 {
                     Placement = FlyoutPlacementMode.Bottom,
                     Position = new Windows.Foundation.Point(
-                        Math.Max(24, WindowRoot.ActualWidth / 2 - 150),
-                        Math.Max(80, WindowRoot.ActualHeight / 2 - 80)),
+                        Math.Max(24, WindowRoot.ActualWidth / 2 - 175),
+                        Math.Max(60, WindowRoot.ActualHeight / 2 - 110)),
                 });
             });
         }
 
-        private void EnsureTaskbarTintFlyout()
+        private void EnsureTaskbarPanel()
         {
-            if (_taskbarTintFlyout != null)
+            if (_taskbarPanelFlyout != null)
             {
                 return;
             }
 
-            _taskbarTintValueText = new TextBlock { FontSize = 12, Margin = new Thickness(0, 2, 0, 0) };
+            _taskbarOffRadio = CreateModeRadio("关", TaskbarEffect.Off);
+            _taskbarClearRadio = CreateModeRadio("透明", TaskbarEffect.Clear);
+            _taskbarAcrylicRadio = CreateModeRadio("亚克力", TaskbarEffect.Acrylic);
 
-            _taskbarTintSlider = new Slider
+            _taskbarClearSlider = CreateTintSlider(TaskbarEffect.Clear, out _taskbarClearPercent);
+            _taskbarAcrylicSlider = CreateTintSlider(TaskbarEffect.Acrylic, out _taskbarAcrylicPercent);
+
+            var panel = new StackPanel
+            {
+                Padding = new Thickness(18, 14, 18, 16),
+                Spacing = 6,
+                Width = 340,
+            };
+
+            panel.Children.Add(new TextBlock
+            {
+                Text = "任务栏外观",
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Margin = new Thickness(0, 0, 0, 4),
+            });
+
+            panel.Children.Add(TaskbarModeRow(_taskbarOffRadio, null, null));
+            panel.Children.Add(TaskbarModeRow(_taskbarClearRadio, _taskbarClearSlider, _taskbarClearPercent));
+            panel.Children.Add(TaskbarModeRow(_taskbarAcrylicRadio, _taskbarAcrylicSlider, _taskbarAcrylicPercent));
+
+            panel.Children.Add(new TextBlock
+            {
+                Text = "拖动滑块会切到对应档位。「透明」0% 为纯透明；「亚克力」数值越大，磨砂上的着色越重。",
+                FontSize = 12,
+                Opacity = 0.7,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 8, 0, 0),
+            });
+
+            _taskbarPanelFlyout = new Flyout { Content = panel };
+            _taskbarPanelFlyout.Closed += (_, _) => SaveTaskbarTint();
+        }
+
+        private RadioButton CreateModeRadio(string text, TaskbarEffect effect)
+        {
+            var radio = new RadioButton
+            {
+                Content = text,
+                GroupName = "TaskbarPanelMode",
+                Tag = effect,
+                MinWidth = 78,
+                Margin = new Thickness(0, 2, 0, 2),
+            };
+            radio.Checked += TaskbarModeRadio_Checked;
+            return radio;
+        }
+
+        private Slider CreateTintSlider(TaskbarEffect effect, out TextBlock percentText)
+        {
+            percentText = new TextBlock
+            {
+                FontSize = 12,
+                MinWidth = 38,
+                TextAlignment = TextAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+
+            var slider = new Slider
             {
                 Minimum = 0,
                 Maximum = 100,
                 StepFrequency = 1,
-                Width = 280,
-                Margin = new Thickness(0, 6, 0, 2),
+                Tag = effect,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 2, 0, 2),
             };
-            _taskbarTintSlider.ValueChanged += TaskbarTintSlider_ValueChanged;
-
-            _taskbarTintHintText = new TextBlock
-            {
-                FontSize = 12,
-                Opacity = 0.72,
-                TextWrapping = TextWrapping.Wrap,
-                MaxWidth = 280,
-            };
-
-            _taskbarTintTitleText = new TextBlock
-            {
-                Text = "任务栏浓度",
-                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            };
-
-            var panel = new StackPanel
-            {
-                Padding = new Thickness(18, 14, 18, 14),
-                Spacing = 2,
-            };
-            panel.Children.Add(_taskbarTintTitleText);
-            panel.Children.Add(_taskbarTintValueText);
-            panel.Children.Add(_taskbarTintSlider);
-            panel.Children.Add(_taskbarTintHintText);
-
-            _taskbarTintFlyout = new Flyout { Content = panel };
-            _taskbarTintFlyout.Closed += (_, _) => SaveTaskbarTint();
+            slider.ValueChanged += TaskbarTintSlider_ValueChanged;
+            return slider;
         }
 
-        private void TaskbarTintSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+        private static Grid TaskbarModeRow(RadioButton radio, Slider? slider, TextBlock? percent)
         {
-            if (_taskbarTintValueText != null)
+            var grid = new Grid { ColumnSpacing = 6 };
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            Grid.SetColumn(radio, 0);
+            grid.Children.Add(radio);
+
+            if (slider != null)
             {
-                _taskbarTintValueText.Text = $"浓度：{(int)Math.Round(e.NewValue)}%";
+                Grid.SetColumn(slider, 1);
+                grid.Children.Add(slider);
             }
 
-            if (_taskbarTintSyncing)
+            if (percent != null)
+            {
+                Grid.SetColumn(percent, 2);
+                grid.Children.Add(percent);
+            }
+
+            return grid;
+        }
+
+        private async void TaskbarModeRadio_Checked(object sender, RoutedEventArgs e)
+        {
+            if (_taskbarPanelSyncing)
+            {
+                return;
+            }
+
+            if (sender is not RadioButton radio || radio.Tag is not TaskbarEffect effect)
             {
                 return;
             }
 
             var service = (Application.Current as App)?.TaskbarAppearance;
-            service?.SetTintAlpha((int)Math.Round(e.NewValue * 255.0 / 100.0));
+            if (service == null || service.Current == effect)
+            {
+                return;
+            }
+
+            await ApplyTaskbarEffectAsync(effect);
+        }
+
+        private async void TaskbarTintSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+        {
+            if (sender is not Slider slider || slider.Tag is not TaskbarEffect effect)
+            {
+                return;
+            }
+
+            var percent = effect == TaskbarEffect.Clear ? _taskbarClearPercent : _taskbarAcrylicPercent;
+            if (percent != null)
+            {
+                percent.Text = $"{(int)Math.Round(e.NewValue)}%";
+            }
+
+            if (_taskbarPanelSyncing)
+            {
+                return;
+            }
+
+            var service = (Application.Current as App)?.TaskbarAppearance;
+            if (service == null)
+            {
+                return;
+            }
+
+            var alpha = (int)Math.Round(e.NewValue * 255.0 / 100.0);
+
+            if (service.Current != effect)
+            {
+                // 在这一档的滑块上动一下 = 切到这一档，再按这个值上色
+                await ApplyTaskbarEffectAsync(effect);
+
+                // 切成功了就把单选也拨过来，面板上得对得上
+                _taskbarPanelSyncing = true;
+                var radio = effect == TaskbarEffect.Clear ? _taskbarClearRadio : _taskbarAcrylicRadio;
+                if (radio != null)
+                {
+                    radio.IsChecked = true;
+                }
+                _taskbarPanelSyncing = false;
+            }
+
+            service.SetTintAlpha(alpha);
         }
 
         private void SaveTaskbarTint()
@@ -2609,9 +2724,6 @@ namespace App1
                     // 更新任务栏透明菜单项状态
                     UpdateTaskbarBlurMenuItemStatus(menuFlyout);
 
-                    // 浓度滑块项：没开档位置灰，开了把当前百分比写进标题
-                    UpdateTaskbarTintMenuItemStatus(menuFlyout);
-
                     // 更新定时切换菜单项状态
                     UpdateTimerMenuItemStatus(menuFlyout);
                 }
@@ -2619,57 +2731,6 @@ namespace App1
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[UI] 右键菜单打开失败: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// 刷新「调节浓度…」：没开档位时置灰，开了就把当前百分比写进标题，
-        /// 免得用户点进去才知道现在是多少。
-        ///
-        /// 只能按文字找：XAML 编译器不会给 MenuFlyout 里的元素生成 x:Name 字段
-        /// （写了也是编译不过的），菜单项只能在运行时遍历出来。
-        /// </summary>
-        private void UpdateTaskbarTintMenuItemStatus(MenuFlyout menuFlyout)
-        {
-            try
-            {
-                var service = (Application.Current as App)?.TaskbarAppearance;
-                var enabled = service != null && service.Current != TaskbarEffect.Off;
-                var percent = service == null
-                    ? 0
-                    : (int)Math.Round(service.CurrentTintAlpha * 100.0 / 255.0);
-                var text = enabled ? $"调节浓度（{percent}%）…" : "调节浓度…";
-
-                foreach (var item in EnumerateMenuItems(menuFlyout.Items))
-                {
-                    if (item is MenuFlyoutItem menuItem &&
-                        menuItem.Text != null &&
-                        menuItem.Text.StartsWith("调节浓度", StringComparison.Ordinal))
-                    {
-                        menuItem.IsEnabled = enabled;
-                        menuItem.Text = text;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[UI] 更新浓度菜单项失败: {ex.Message}");
-            }
-        }
-
-        private static IEnumerable<MenuFlyoutItemBase> EnumerateMenuItems(IEnumerable<MenuFlyoutItemBase> items)
-        {
-            foreach (var item in items)
-            {
-                yield return item;
-
-                if (item is MenuFlyoutSubItem sub)
-                {
-                    foreach (var child in EnumerateMenuItems(sub.Items))
-                    {
-                        yield return child;
-                    }
-                }
             }
         }
 
