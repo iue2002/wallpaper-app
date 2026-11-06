@@ -4,10 +4,17 @@
 #include <string>
 #include <thread>
 
+#include <winrt/Windows.UI.Composition.h>
+#include <winrt/Windows.UI.Xaml.Hosting.h>
+
+#include "GaussianBlurEffect.h"
 #include "TapLog.h"
 #include "TapRuntime.h"
 
 using namespace winrt;
+
+namespace wuc = winrt::Windows::UI::Composition;
+namespace wuxh = winrt::Windows::UI::Xaml::Hosting;
 
 namespace
 {
@@ -150,6 +157,15 @@ void VisualTreeWatcher::ApplyOne(Entry& entry, LONG mode, LONG color)
 	{
 		if (mode == kModeRestore)
 		{
+			// 把亚克力那层合成子树摘掉，不然还原之后它还盖在上面
+			try
+			{
+				wuxh::ElementCompositionPreview::SetElementChildVisual(entry.Rect, nullptr);
+			}
+			catch (...)
+			{
+			}
+
 			entry.Rect.Fill(entry.Original);
 			return;
 		}
@@ -169,19 +185,48 @@ void VisualTreeWatcher::ApplyOne(Entry& entry, LONG mode, LONG color)
 
 		if (mode == kModeAcrylic)
 		{
-			wux::Media::AcrylicBrush brush;
-			// 任务栏要用 Backdrop 而不是 HostBackdrop：任务栏窗口本身是透明的，
-			// Backdrop 直接吃窗口后面的内容，也不用开洞。
-			brush.BackgroundSource(wux::Media::AcrylicBackgroundSource::Backdrop);
-			brush.TintColor(tint);
-
-			// 只设这两个属性，和 TranslucentTB 完全一致。
+			// 亚克力 = 背景高斯模糊 + 一层半透明着色。
 			//
-			// 之前还设了 TintOpacity 和 FallbackColor(不透明黑) —— 后者是致命的：
-			// 一旦 Backdrop 这一层合成不可用（任务栏这种 XAML 岛常常如此），
-			// 画刷就退回 FallbackColor，整个任务栏直接变成纯黑一块。
-			// 不设 FallbackColor 时默认是透明的，最差也只是没有磨砂，不会糊一片黑。
-			entry.Rect.Fill(brush);
+			// 不能用 AcrylicBrush：任务栏是 explorer 里的 XAML 岛，
+			// AcrylicBrush(Backdrop) 在这里拿不到窗口背景，画出来跟没有一样。
+			// 改成往矩形下面挂一个合成子树：
+			//   底：BackdropBrush 经过高斯模糊（自己实现的 D2D 效果）
+			//   上：半透明纯色，负责 tint
+			auto element = entry.Rect;
+			auto visual = wuxh::ElementCompositionPreview::GetElementVisual(element);
+			auto compositor = visual.Compositor();
+
+			auto backdrop = compositor.CreateBackdropBrush();
+
+			auto effect = winrt::make_self<GaussianBlurEffect>();
+			effect->BlurAmount = 14.0f;
+			effect->Source = wuc::CompositionEffectSourceParameter(L"backdrop");
+
+			auto blurBrush = compositor.CreateEffectFactory(*effect).CreateBrush();
+			blurBrush.SetSourceParameter(L"backdrop", backdrop);
+
+			auto blurSprite = compositor.CreateSpriteVisual();
+			blurSprite.Brush(blurBrush);
+
+			auto tintSprite = compositor.CreateSpriteVisual();
+			tintSprite.Brush(compositor.CreateColorBrush(tint));
+
+			auto container = compositor.CreateContainerVisual();
+			container.Children().InsertAtTop(blurSprite);
+			container.Children().InsertAtTop(tintSprite);
+
+			const winrt::Windows::Foundation::Size size{
+				static_cast<float>(element.ActualWidth()),
+				static_cast<float>(element.ActualHeight()) };
+			container.Size(size);
+			blurSprite.Size(size);
+			tintSprite.Size(size);
+
+			wuxh::ElementCompositionPreview::SetElementChildVisual(element, container);
+
+			// 原来的背景要清掉，否则会盖在模糊层上面
+			element.Fill(nullptr);
+			TapLog(L"[watcher] 亚克力合成层已挂上 %.0fx%.0f", size.Width, size.Height);
 		}
 		else
 		{
