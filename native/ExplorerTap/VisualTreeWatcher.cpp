@@ -183,52 +183,12 @@ void VisualTreeWatcher::ApplyOne(Entry& entry, LONG mode, LONG color)
 		tint.G = static_cast<uint8_t>((color >> 8) & 0xFF);
 		tint.B = static_cast<uint8_t>(color & 0xFF);
 
-		if (mode == kModeAcrylic)
+		if (mode == kModeAcrylic && TryApplyAcrylic(entry, tint))
 		{
-			// 亚克力 = 背景高斯模糊 + 一层半透明着色。
-			//
-			// 不能用 AcrylicBrush：任务栏是 explorer 里的 XAML 岛，
-			// AcrylicBrush(Backdrop) 在这里拿不到窗口背景，画出来跟没有一样。
-			// 改成往矩形下面挂一个合成子树：
-			//   底：BackdropBrush 经过高斯模糊（自己实现的 D2D 效果）
-			//   上：半透明纯色，负责 tint
-			auto element = entry.Rect;
-			auto visual = wuxh::ElementCompositionPreview::GetElementVisual(element);
-			auto compositor = visual.Compositor();
-
-			auto backdrop = compositor.CreateBackdropBrush();
-
-			auto effect = winrt::make_self<GaussianBlurEffect>();
-			effect->BlurAmount = 14.0f;
-			effect->Source = wuc::CompositionEffectSourceParameter(L"backdrop");
-
-			auto blurBrush = compositor.CreateEffectFactory(*effect).CreateBrush();
-			blurBrush.SetSourceParameter(L"backdrop", backdrop);
-
-			auto blurSprite = compositor.CreateSpriteVisual();
-			blurSprite.Brush(blurBrush);
-
-			auto tintSprite = compositor.CreateSpriteVisual();
-			tintSprite.Brush(compositor.CreateColorBrush(tint));
-
-			auto container = compositor.CreateContainerVisual();
-			container.Children().InsertAtTop(blurSprite);
-			container.Children().InsertAtTop(tintSprite);
-
-			const winrt::Windows::Foundation::Size size{
-				static_cast<float>(element.ActualWidth()),
-				static_cast<float>(element.ActualHeight()) };
-			container.Size(size);
-			blurSprite.Size(size);
-			tintSprite.Size(size);
-
-			wuxh::ElementCompositionPreview::SetElementChildVisual(element, container);
-
-			// 原来的背景要清掉，否则会盖在模糊层上面
-			element.Fill(nullptr);
-			TapLog(L"[watcher] 亚克力合成层已挂上 %.0fx%.0f", size.Width, size.Height);
+			return;
 		}
-		else
+
+		// 透明走纯色；亚克力合成失败也退回纯色，至少不是全透明一片
 		{
 			wux::Media::SolidColorBrush brush;
 			brush.Color(tint);
@@ -344,4 +304,74 @@ HRESULT VisualTreeWatcher::OnVisualTreeChange(
 HRESULT VisualTreeWatcher::OnElementStateChanged(InstanceHandle, VisualElementState, LPCWSTR) noexcept
 {
 	return S_OK;
+}
+
+bool VisualTreeWatcher::TryApplyAcrylic(Entry& entry, const winrt::Windows::UI::Color& tint)
+{
+	// 亚克力 = 背景高斯模糊 + 一层半透明着色。
+	//
+	// AcrylicBrush(Backdrop) 在 explorer 的 XAML 岛里拿不到窗口背景，
+	// 画出来只有颜色没有磨砂，所以这里往 BackgroundFill 上挂一棵合成子树：
+	//   底：BackdropBrush → 高斯模糊（自己实现的 D2D 效果）
+	//   上：半透明纯色，负责 tint
+	const wchar_t* step = L"a 入口";
+
+	try
+	{
+		auto element = entry.Rect;
+
+		step = L"b 取元素可视化";
+		auto visual = wuxh::ElementCompositionPreview::GetElementVisual(element);
+		auto compositor = visual.Compositor();
+
+		step = L"c BackdropBrush";
+		auto backdrop = compositor.CreateBackdropBrush();
+
+		step = L"d EffectFactory";
+		auto effect = winrt::make_self<GaussianBlurEffect>();
+		effect->BlurAmount = 14.0f;
+		effect->Source = wuc::CompositionEffectSourceParameter(L"backdrop");
+		auto factory = compositor.CreateEffectFactory(*effect);
+
+		step = L"e EffectBrush";
+		auto blurBrush = factory.CreateBrush();
+		blurBrush.SetSourceParameter(L"backdrop", backdrop);
+
+		step = L"f 组装子树";
+		auto blurSprite = compositor.CreateSpriteVisual();
+		blurSprite.Brush(blurBrush);
+
+		auto tintSprite = compositor.CreateSpriteVisual();
+		tintSprite.Brush(compositor.CreateColorBrush(tint));
+
+		auto container = compositor.CreateContainerVisual();
+		container.Children().InsertAtTop(blurSprite);
+		container.Children().InsertAtTop(tintSprite);
+
+		const winrt::Windows::Foundation::Size size{
+			static_cast<float>(element.ActualWidth()),
+			static_cast<float>(element.ActualHeight()) };
+		container.Size(size);
+		blurSprite.Size(size);
+		tintSprite.Size(size);
+
+		step = L"g 挂子可视化";
+		wuxh::ElementCompositionPreview::SetElementChildVisual(element, container);
+
+		element.Fill(nullptr);
+
+		TapLog(L"[acrylic] 合成层挂载成功 %.0fx%.0f", size.Width, size.Height);
+		return true;
+	}
+	catch (const winrt::hresult_error& e)
+	{
+		TapLog(L"[acrylic] %s 失败: 0x%08X %s", step,
+			static_cast<unsigned>(e.code().value), e.message().c_str());
+		return false;
+	}
+	catch (...)
+	{
+		TapLog(L"[acrylic] %s 未知异常", step);
+		return false;
+	}
 }
