@@ -1,5 +1,13 @@
 #include "GaussianBlurEffect.h"
 
+#include <cstdio>
+#ifdef XIAOK_TRACE
+#define TRACE(...) printf(__VA_ARGS__)
+#else
+#define TRACE(...)
+#endif
+
+
 #include <winrt/Windows.Foundation.h>
 
 using namespace winrt;
@@ -24,6 +32,7 @@ void GaussianBlurEffect::Name(winrt::hstring const& value)
 
 HRESULT GaussianBlurEffect::GetEffectId(GUID* id) noexcept
 {
+	TRACE("[fx] GetEffectId\n");
 	if (!id)
 	{
 		return E_POINTER;
@@ -36,6 +45,7 @@ HRESULT GaussianBlurEffect::GetEffectId(GUID* id) noexcept
 HRESULT GaussianBlurEffect::GetNamedPropertyMapping(LPCWSTR name, UINT* index,
 	awge::GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept
 {
+	TRACE("[fx] GetNamedPropertyMapping %ls\n", name ? name : L"(null)");
 	if (!name || !index || !mapping)
 	{
 		return E_POINTER;
@@ -43,67 +53,95 @@ HRESULT GaussianBlurEffect::GetNamedPropertyMapping(LPCWSTR name, UINT* index,
 
 	if (wcscmp(name, L"BlurAmount") == 0)
 	{
-		*index = 0;
-		*mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
-		return S_OK;
+		*index = 0;   // D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION
+	}
+	else if (wcscmp(name, L"Optimization") == 0)
+	{
+		*index = 1;   // D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION
+	}
+	else if (wcscmp(name, L"BorderMode") == 0)
+	{
+		*index = 2;   // D2D1_GAUSSIANBLUR_PROP_BORDER_MODE
+	}
+	else
+	{
+		return E_INVALIDARG;
 	}
 
-	return E_INVALIDARG;
+	*mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
+	return S_OK;
 }
 
 HRESULT GaussianBlurEffect::GetPropertyCount(UINT* count) noexcept
 {
+	TRACE("[fx] GetPropertyCount\n");
 	if (!count)
 	{
 		return E_POINTER;
 	}
 
-	*count = 1;
+	*count = 3;
 	return S_OK;
 }
 
 HRESULT GaussianBlurEffect::GetProperty(UINT index, ABI::Windows::Foundation::IPropertyValue** value) noexcept
 {
+	TRACE("[fx] GetProperty %u\n", index);
 	if (!value)
 	{
 		return E_POINTER;
 	}
 
 	*value = nullptr;
-	if (index != 0)
+
+	switch (index)
 	{
+	case 0:
+		*value = winrt::Windows::Foundation::PropertyValue::CreateSingle(BlurAmount)
+			.as<ABI::Windows::Foundation::IPropertyValue>().detach();
+		return S_OK;
+
+	case 1:
+		*value = winrt::Windows::Foundation::PropertyValue::CreateUInt32(Optimization)
+			.as<ABI::Windows::Foundation::IPropertyValue>().detach();
+		return S_OK;
+
+	case 2:
+		*value = winrt::Windows::Foundation::PropertyValue::CreateUInt32(BorderMode)
+			.as<ABI::Windows::Foundation::IPropertyValue>().detach();
+		return S_OK;
+
+	default:
 		return E_INVALIDARG;
 	}
-
-	const auto boxed = winrt::Windows::Foundation::PropertyValue::CreateSingle(BlurAmount);
-	*value = boxed.as<ABI::Windows::Foundation::IPropertyValue>().detach();
-	return S_OK;
 }
 
 HRESULT GaussianBlurEffect::GetSource(UINT index, awge::IGraphicsEffectSource** source) noexcept
 {
+	TRACE("[fx] GetSource %u\n", index);
 	if (!source)
 	{
 		return E_POINTER;
 	}
 
 	*source = nullptr;
-	if (index != 0 || !Source)
+	if (index != 0)
 	{
 		return E_INVALIDARG;
 	}
 
-	Source.as<awge::IGraphicsEffectSource>().copy_to(source);
+	winrt::copy_to_abi(Source, *reinterpret_cast<void**>(source));
 	return S_OK;
 }
 
 HRESULT GaussianBlurEffect::GetSourceCount(UINT* count) noexcept
 {
+	TRACE("[fx] GetSourceCount\n");
 	if (!count)
 	{
 		return E_POINTER;
 	}
 
-	*count = Source ? 1 : 0;
+	*count = 1;
 	return S_OK;
 }
