@@ -174,9 +174,13 @@ void VisualTreeWatcher::ApplyOne(Entry& entry, LONG mode, LONG color)
 			// Backdrop 直接吃窗口后面的内容，也不用开洞。
 			brush.BackgroundSource(wux::Media::AcrylicBackgroundSource::Backdrop);
 			brush.TintColor(tint);
-			brush.TintOpacity(static_cast<double>(tint.A) / 255.0);
-			brush.FallbackColor(winrt::Windows::UI::Color{ 0xFF, tint.R, tint.G, tint.B });
 
+			// 只设这两个属性，和 TranslucentTB 完全一致。
+			//
+			// 之前还设了 TintOpacity 和 FallbackColor(不透明黑) —— 后者是致命的：
+			// 一旦 Backdrop 这一层合成不可用（任务栏这种 XAML 岛常常如此），
+			// 画刷就退回 FallbackColor，整个任务栏直接变成纯黑一块。
+			// 不设 FallbackColor 时默认是透明的，最差也只是没有磨砂，不会糊一片黑。
 			entry.Rect.Fill(brush);
 		}
 		else
