@@ -10,6 +10,7 @@ using App1.Services.Imaging;
 using App1.Services.Quality;
 using Windows.Graphics.Imaging;
 using Windows.Storage.Streams;
+using App1.Services.Network;
 
 namespace App1.Services.Api
 {
@@ -153,6 +154,7 @@ namespace App1.Services.Api
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[Upx8 API] 获取壁纸失败: {ex.Message}");
+                SourceGate.ReportFailure("upx8", ex);
                 return new List<Wallpaper>();
             }
         }

@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using App1.Models;
 using App1.Services.Quality;
+using App1.Services.Network;
 
 namespace App1.Services.Api
 {
@@ -127,6 +128,7 @@ namespace App1.Services.Api
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[Pexels API] ❌ 获取失败: {ex.Message}");
+                SourceGate.ReportFailure("pexels", ex);
                 return wallpapers;
             }
         }

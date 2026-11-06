@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
 using App1.Models;
+using App1.Services.Network;
 
 namespace App1.Services.Api
 {
@@ -85,6 +86,7 @@ namespace App1.Services.Api
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[BingAPI] ❌ 获取失败: {ex.Message}");
+                SourceGate.ReportFailure("bing", ex);
                 return new List<Wallpaper>();
             }
         }

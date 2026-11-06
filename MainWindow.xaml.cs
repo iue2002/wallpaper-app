@@ -871,8 +871,16 @@ namespace App1
                 {
                     _consecutiveNetworkErrors++;
                     System.Diagnostics.Debug.WriteLine($"[加载更多] ⚠️ 连续加载失败 {_consecutiveNetworkErrors} 次");
-                    
-                    if (_wallpapers.Count == 0)
+
+                    // 全部源都不可用（断网 / 全在冷却）时，先拿本地库里的历史图顶上，
+                    // 别让用户对着一片空白。
+                    var cached = await TryLoadCachedWallpapersAsync();
+                    if (cached != null && cached.Count > 0)
+                    {
+                        AddWallpapersToUi(cached, "本地缓存");
+                        ShowToast("图源暂时不可用，先显示本地缓存", isSuccess: false, durationMs: 3000);
+                    }
+                    else if (_wallpapers.Count == 0)
                     {
                         ShowEmpty(true);
                     }
@@ -1230,6 +1238,40 @@ namespace App1
         /// <summary>
         /// 显示空状态
         /// </summary>
+        /// <summary>
+        /// 网络全挂时的兜底：从本地库捞最近的一批图。捞不到返回 null。
+        /// </summary>
+        private async Task<List<Wallpaper>?> TryLoadCachedWallpapersAsync()
+        {
+            if (_repository == null)
+            {
+                return null;
+            }
+
+            try
+            {
+                var cached = await _repository.GetWallpapersAsync(limit: 24);
+                if (cached == null || cached.Count == 0)
+                {
+                    return null;
+                }
+
+                var cooling = string.Join(", ", SourceGate.Snapshot()
+                    .Where(s => s.CoolingUntil != null)
+                    .Select(s => $"{s.Key}({s.LastError})"));
+
+                App1.Services.Diagnostics.AppLog.Write(
+                    $"[加载] 图源不可用，用本地缓存顶上 {cached.Count} 张；冷却中：{cooling}");
+
+                return cached;
+            }
+            catch (Exception ex)
+            {
+                App1.Services.Diagnostics.AppLog.Write("[加载] 读本地缓存失败: " + ex.Message);
+                return null;
+            }
+        }
+
         private void ShowEmpty(bool show)
         {
             EmptyPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;

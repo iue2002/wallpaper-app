@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
 using App1.Models;
+using App1.Services.Network;
 
 namespace App1.Services.Api
 {
@@ -100,6 +101,7 @@ namespace App1.Services.Api
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[360API] 获取壁纸失败: {ex.Message}");
+                SourceGate.ReportFailure("qihu", ex);
                 return new List<Wallpaper>();
             }
         }

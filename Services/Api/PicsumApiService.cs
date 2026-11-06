@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using App1.Config;
 using App1.Models;
 using App1.Services.Quality;
+using App1.Services.Network;
 
 namespace App1.Services.Api
 {
@@ -116,6 +117,7 @@ namespace App1.Services.Api
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[Picsum] ❌ 失败: {ex.GetType().Name} - {ex.Message}");
+                SourceGate.ReportFailure("picsum", ex);
             }
 
             return wallpapers;
