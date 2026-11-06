@@ -250,11 +250,29 @@
                                         </MenuFlyoutItem.Icon>
                                     </MenuFlyoutItem>
                                     <MenuFlyoutSeparator />
-                                    <MenuFlyoutItem Text="任务栏外观" Click="OpenTaskbarPanel_Click" PointerEntered="TaskbarAppearanceItem_PointerEntered">
-                                        <MenuFlyoutItem.Icon>
+                                    <MenuFlyoutSubItem Text="任务栏外观">
+                                        <MenuFlyoutSubItem.Icon>
                                             <FontIcon Glyph="&#xF13A;" />
-                                        </MenuFlyoutItem.Icon>
-                                    </MenuFlyoutItem>
+                                        </MenuFlyoutSubItem.Icon>
+                                        <MenuFlyoutItem Text="关闭（系统默认）" Tag="0" Click="SetTaskbarEffect_Click" />
+                                        <MenuFlyoutSeparator />
+                                        <MenuFlyoutSubItem Text="透明">
+                                            <MenuFlyoutItem Text="启用（全透明）" Tag="1:0" Click="SetTaskbarTint_Click" />
+                                            <MenuFlyoutItem Text="25% 黑" Tag="1:64" Click="SetTaskbarTint_Click" />
+                                            <MenuFlyoutItem Text="50% 黑" Tag="1:128" Click="SetTaskbarTint_Click" />
+                                            <MenuFlyoutItem Text="75% 黑" Tag="1:191" Click="SetTaskbarTint_Click" />
+                                            <MenuFlyoutItem Text="不透明黑" Tag="1:255" Click="SetTaskbarTint_Click" />
+                                        </MenuFlyoutSubItem>
+                                        <MenuFlyoutSubItem Text="亚克力">
+                                            <MenuFlyoutItem Text="启用（不着色）" Tag="2:0" Click="SetTaskbarTint_Click" />
+                                            <MenuFlyoutItem Text="25% 着色" Tag="2:64" Click="SetTaskbarTint_Click" />
+                                            <MenuFlyoutItem Text="50% 着色" Tag="2:128" Click="SetTaskbarTint_Click" />
+                                            <MenuFlyoutItem Text="75% 着色" Tag="2:191" Click="SetTaskbarTint_Click" />
+                                            <MenuFlyoutItem Text="100% 着色" Tag="2:255" Click="SetTaskbarTint_Click" />
+                                        </MenuFlyoutSubItem>
+                                        <MenuFlyoutSeparator />
+                                        <MenuFlyoutItem Text="更多设置（滑块）…" Click="OpenTaskbarPanel_Click" />
+                                    </MenuFlyoutSubItem>
                                     <MenuFlyoutSeparator />
                                     <MenuFlyoutItem Text="下载此图片" Click="DownloadImage_Click">
                                         <MenuFlyoutItem.Icon>
@@ -386,11 +404,29 @@
                                             </MenuFlyoutItem.Icon>
                                         </MenuFlyoutItem>
                                         <MenuFlyoutSeparator />
-                                        <MenuFlyoutItem Text="任务栏外观" Click="OpenTaskbarPanel_Click" PointerEntered="TaskbarAppearanceItem_PointerEntered">
-                                            <MenuFlyoutItem.Icon>
+                                        <MenuFlyoutSubItem Text="任务栏外观">
+                                            <MenuFlyoutSubItem.Icon>
                                                 <FontIcon Glyph="&#xF13A;" />
-                                            </MenuFlyoutItem.Icon>
-                                        </MenuFlyoutItem>
+                                            </MenuFlyoutSubItem.Icon>
+                                            <MenuFlyoutItem Text="关闭（系统默认）" Tag="0" Click="SetTaskbarEffect_Click" />
+                                            <MenuFlyoutSeparator />
+                                            <MenuFlyoutSubItem Text="透明">
+                                                <MenuFlyoutItem Text="启用（全透明）" Tag="1:0" Click="SetTaskbarTint_Click" />
+                                                <MenuFlyoutItem Text="25% 黑" Tag="1:64" Click="SetTaskbarTint_Click" />
+                                                <MenuFlyoutItem Text="50% 黑" Tag="1:128" Click="SetTaskbarTint_Click" />
+                                                <MenuFlyoutItem Text="75% 黑" Tag="1:191" Click="SetTaskbarTint_Click" />
+                                                <MenuFlyoutItem Text="不透明黑" Tag="1:255" Click="SetTaskbarTint_Click" />
+                                            </MenuFlyoutSubItem>
+                                            <MenuFlyoutSubItem Text="亚克力">
+                                                <MenuFlyoutItem Text="启用（不着色）" Tag="2:0" Click="SetTaskbarTint_Click" />
+                                                <MenuFlyoutItem Text="25% 着色" Tag="2:64" Click="SetTaskbarTint_Click" />
+                                                <MenuFlyoutItem Text="50% 着色" Tag="2:128" Click="SetTaskbarTint_Click" />
+                                                <MenuFlyoutItem Text="75% 着色" Tag="2:191" Click="SetTaskbarTint_Click" />
+                                                <MenuFlyoutItem Text="100% 着色" Tag="2:255" Click="SetTaskbarTint_Click" />
+                                            </MenuFlyoutSubItem>
+                                            <MenuFlyoutSeparator />
+                                            <MenuFlyoutItem Text="更多设置（滑块）…" Click="OpenTaskbarPanel_Click" />
+                                        </MenuFlyoutSubItem>
                                         <MenuFlyoutSeparator />
                                         <MenuFlyoutItem Text="下载此图片" Click="DownloadImage_Click">
                                             <MenuFlyoutItem.Icon>
