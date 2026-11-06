@@ -37,6 +37,17 @@ static void EnsurePath()
 	g_path += L"\\tap.log";
 }
 
+static unsigned long long FileSize(const std::wstring& path)
+{
+	WIN32_FILE_ATTRIBUTE_DATA data{};
+	if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data))
+	{
+		return 0;
+	}
+
+	return (static_cast<unsigned long long>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
+}
+
 void TapLogEnable(bool enable)
 {
 	AcquireSRWLockExclusive(&g_lock);
@@ -44,8 +55,13 @@ void TapLogEnable(bool enable)
 	{
 		g_enabled = true;
 		EnsurePath();
-		// 每次开启都重开一份，避免日志无限增长
-		if (!g_path.empty())
+
+		// 超过 512KB 才滚一次。
+		//
+		// 原来每次注入都先 DeleteFile —— 一次注入要试 60 个连接名，
+		// 日志被删掉之后，"试到第几次才成功 / 每次返回什么码"这些唯一能
+		// 拿来排障的东西全没了，只能靠猜。
+		if (!g_path.empty() && FileSize(g_path) > 512ull * 1024)
 		{
 			DeleteFileW(g_path.c_str());
 		}

@@ -22,7 +22,13 @@ namespace App1.Services.Taskbar
     {
         private const string DllFileName = "ExplorerTap.dll";
         private const int WatchdogIntervalMs = 3000;
-        private const int InjectionTimeoutMs = 15000;
+
+        /// <summary>
+        /// 注入超时。DLL 那边按 60 个连接名 × 250ms 逐个试，约 15 秒，
+        /// 这里留 20 秒，保证失败原因（Status=Failed）能被读回来，
+        /// 而不是只剩一句"超时"。
+        /// </summary>
+        private const int InjectionTimeoutMs = 20000;
 
         /// <summary>
         /// 看门狗连续注入失败多少次后放弃。
@@ -48,6 +54,8 @@ namespace App1.Services.Taskbar
         private EventWaitHandle? _command;
         private EventWaitHandle? _ready;
         private IntPtr _module;
+        private string? _modulePath;
+        private string? _stagedDllPath;
         private uint _injectedPid;
         private DateTime _lastInjectAttempt = DateTime.MinValue;
         private int _consecutiveFailures;
@@ -207,6 +215,67 @@ namespace App1.Services.Taskbar
             }
         }
 
+        /// <summary>
+        /// 把注入模块复制到一个纯 ASCII 的短路径再加载。
+        ///
+        /// 两条原因，都是照 TranslucentTB 的部署方式来的（它把 ExplorerTAP.dll 放在
+        /// 包的 TempState 里，从不从安装目录加载）：
+        /// 1. 程序目录可能带中文和空格（本机就是 D:\...\桌面壁纸\App1 - 副本\...）。
+        ///    这个路径要交给 XAML 诊断的内部逻辑再处理一遍，路径越干净越不容易出岔子。
+        /// 2. 文件名带版本号，每次编译都是新路径。否则 explorer 里已经加载过的旧模块
+        ///    会按路径直接复用，新的 DLL 永远进不去，只能重启资源管理器。
+        /// </summary>
+        private string? EnsureStagedDll()
+        {
+            if (_stagedDllPath != null && File.Exists(_stagedDllPath))
+            {
+                return _stagedDllPath;
+            }
+
+            try
+            {
+                var source = Path.Combine(AppContext.BaseDirectory, DllFileName);
+                if (!File.Exists(source))
+                {
+                    LastError = $"缺少 {DllFileName}";
+                    return null;
+                }
+
+                var info = new FileInfo(source);
+                var tag = $"{info.Length:x}_{info.LastWriteTimeUtc.Ticks:x}";
+                var dir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "XiaoKWallpaper",
+                    "TAP");
+
+                Directory.CreateDirectory(dir);
+
+                var target = Path.Combine(dir, $"ExplorerTap.{tag}.dll");
+                if (!File.Exists(target))
+                {
+                    File.Copy(source, target);
+                }
+
+                // 旧版本删得掉就删，删不掉（explorer 还握着）就留着，不影响使用
+                foreach (var old in Directory.GetFiles(dir, "ExplorerTap.*.dll"))
+                {
+                    if (!string.Equals(old, target, StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { File.Delete(old); } catch { }
+                    }
+                }
+
+                App1.Services.Diagnostics.AppLog.Write("[任务栏] 注入模块已就位: " + target);
+                _stagedDllPath = target;
+                return target;
+            }
+            catch (Exception ex)
+            {
+                LastError = "准备注入模块失败: " + ex.Message;
+                return null;
+            }
+        }
+
         private bool EnsureInjected()
         {
             var taskbar = TapIpc.FindWindowW(TapIpc.TaskbarClassName, null);
@@ -229,16 +298,15 @@ namespace App1.Services.Taskbar
                 return true;
             }
 
-            var dllPath = Path.Combine(AppContext.BaseDirectory, DllFileName);
-            if (!File.Exists(dllPath))
+            var dllPath = EnsureStagedDll();
+            if (dllPath == null)
             {
-                LastError = $"缺少 {DllFileName}";
-                App1.Services.Diagnostics.AppLog.Write("[任务栏] " + LastError + "：" + dllPath);
+                App1.Services.Diagnostics.AppLog.Write("[任务栏] " + LastError);
                 return false;
             }
 
             // 载进本进程只是为了拿到 TapHookProc 的地址；真正的安装发生在 explorer 里
-            if (_module == IntPtr.Zero)
+            if (_module == IntPtr.Zero || !string.Equals(_modulePath, dllPath, StringComparison.OrdinalIgnoreCase))
             {
                 _module = TapIpc.LoadLibraryW(dllPath);
                 if (_module == IntPtr.Zero)
@@ -246,6 +314,8 @@ namespace App1.Services.Taskbar
                     LastError = "加载 ExplorerTap.dll 失败";
                     return false;
                 }
+
+                _modulePath = dllPath;
             }
 
             var hookProc = TapIpc.GetProcAddress(_module, "TapHookProc");

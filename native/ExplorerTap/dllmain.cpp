@@ -114,13 +114,22 @@ namespace
 			return 4;
 		}
 
+		TapLog(L"[tap] 注入开始 pid=%lu tap=%s", GetCurrentProcessId(), dllPath.c_str());
+
 		HRESULT hr = E_FAIL;
-		// 24 次 × 500ms = 12 秒，必须在宿主 15 秒超时之内跑完：
-		// 超过的话宿主只看到"注入超时"，而这里的失败原因（共享内存里 Status=Failed）
-		// 永远没机会被读到。
-		for (int attempt = 1; attempt <= 24; ++attempt)
+		// 连接名必须是 "VisualDiagConnectionN"。
+		//
+		// 这个参数不是随便起的标签：InitializeXamlDiagnosticsEx 拿它去 explorer 里
+		// 查一个「已存在的 XAML 端点」，查不到就返回 0x80070490(Element not found)。
+		// 之前这里用的是自造的 "XiaoKTapConnection"，对应的端点根本不存在，
+		// 所以 60 次尝试注定全失败 —— 注入本身是成功的，名字是错的。
+		// TranslucentTB、UWPSpy、Windhawk 的 XAML 诊断实现用的都是这一串。
+		//
+		// 端点表按进程维护、旧的只关不删，所以从 1 往上试到空位为止。
+		// 60 次 × 250ms ≈ 15 秒，落在宿主 20 秒超时之内。
+		for (int attempt = 1; attempt <= 60; ++attempt)
 		{
-			const std::wstring connection = L"XiaoKTapConnection" + std::to_wstring(attempt);
+			const std::wstring connection = L"VisualDiagConnection" + std::to_wstring(attempt);
 
 			// 每次尝试都换一个线程：XAML 诊断一个线程只能初始化一次，
 			// 失败重试必须在新线程上进行。
@@ -133,18 +142,17 @@ namespace
 
 			if (SUCCEEDED(hr))
 			{
-				TapLog(L"[tap] InitializeXamlDiagnosticsEx 成功，第 %d 次", attempt);
+				TapLog(L"[tap] InitializeXamlDiagnosticsEx 成功，第 %d 次，连接=%s",
+					attempt, connection.c_str());
 				break;
 			}
 
-			// 前 5 次逐条记，之后每 10 次记一条。这个返回码是唯一能判断
-			// "是缺 XamlDiagnostics、还是 XAML 引擎没起来、还是接口对不上" 的依据。
-			if (attempt <= 5 || attempt % 10 == 0)
-			{
-				TapLog(L"[tap] 第 %d 次初始化失败: 0x%08X", attempt, static_cast<unsigned>(hr));
-			}
+			// 逐次全记：改名之后"第几次开始成功"就是端点表状态的直接证据，
+			// 只记前几次会把关键信息裁掉。
+			TapLog(L"[tap] 第 %d 次失败: 0x%08X 连接=%s 系统错误=%lu", attempt,
+				static_cast<unsigned>(hr), connection.c_str(), GetLastError());
 
-			Sleep(500);
+			Sleep(250);
 		}
 
 		TapRuntime::PublishStatus(SUCCEEDED(hr) ? kStatusReady : kStatusFailed, -1);
