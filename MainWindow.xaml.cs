@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using App1.Models;
 using App1.Services;
 using App1.Services.Api;
@@ -2400,6 +2401,133 @@ namespace App1
                 System.Diagnostics.Debug.WriteLine($"[任务栏] 切换失败: {ex.Message}");
                 ShowToast("任务栏外观设置失败", isSuccess: false);
             }
+        }
+
+        private Flyout? _taskbarTintFlyout;
+        private Slider? _taskbarTintSlider;
+        private TextBlock? _taskbarTintValueText;
+        private TextBlock? _taskbarTintHintText;
+        private bool _taskbarTintSyncing;
+
+        /// <summary>
+        /// 菜单「调节浓度…」：弹一个小浮层，里面一个滑块。
+        ///
+        /// 拖动只改共享内存里的 alpha 再敲一下事件，DLL 那边直接换画刷，
+        /// 不重新注入、不碰 explorer，所以可以边拖边看。
+        /// </summary>
+        private void AdjustTaskbarTint_Click(object sender, RoutedEventArgs e)
+        {
+            var service = (Application.Current as App)?.TaskbarAppearance;
+            if (service == null)
+            {
+                ShowToast("任务栏服务未初始化", isSuccess: false);
+                return;
+            }
+
+            if (service.Current == TaskbarEffect.Off)
+            {
+                ShowToast("先选「透明」或「亚克力」，再调浓度", isSuccess: false);
+                return;
+            }
+
+            EnsureTaskbarTintFlyout();
+
+            // 把当前档位的浓度同步到滑块上（这一步不要触发应用）
+            _taskbarTintSyncing = true;
+            _taskbarTintSlider!.Value = Math.Round(service.CurrentTintAlpha * 100.0 / 255.0);
+            _taskbarTintSyncing = false;
+
+            _taskbarTintValueText!.Text = $"浓度：{(int)_taskbarTintSlider.Value}%";
+            _taskbarTintHintText!.Text = service.Current == TaskbarEffect.Clear
+                ? "透明模式：0 为完全透明，数值越大越接近不透明的黑。"
+                : "亚克力模式：数值越大，磨砂上的黑色着色越重；0 就是纯磨砂。";
+
+            // 菜单项点击后菜单会自己关，light-dismiss 有可能顺手把刚弹的浮层一起关掉。
+            // 投递到消息队列，等菜单收完再弹。
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                _taskbarTintFlyout!.ShowAt(WindowRoot, new FlyoutShowOptions
+                {
+                    Placement = FlyoutPlacementMode.Bottom,
+                    Position = new Windows.Foundation.Point(
+                        Math.Max(24, WindowRoot.ActualWidth / 2 - 150),
+                        Math.Max(80, WindowRoot.ActualHeight / 2 - 80)),
+                });
+            });
+        }
+
+        private void EnsureTaskbarTintFlyout()
+        {
+            if (_taskbarTintFlyout != null)
+            {
+                return;
+            }
+
+            _taskbarTintValueText = new TextBlock { FontSize = 12, Margin = new Thickness(0, 2, 0, 0) };
+
+            _taskbarTintSlider = new Slider
+            {
+                Minimum = 0,
+                Maximum = 100,
+                StepFrequency = 1,
+                Width = 280,
+                Margin = new Thickness(0, 6, 0, 2),
+            };
+            _taskbarTintSlider.ValueChanged += TaskbarTintSlider_ValueChanged;
+
+            _taskbarTintHintText = new TextBlock
+            {
+                FontSize = 12,
+                Opacity = 0.72,
+                TextWrapping = TextWrapping.Wrap,
+                MaxWidth = 280,
+            };
+
+            var panel = new StackPanel
+            {
+                Padding = new Thickness(18, 14, 18, 14),
+                Spacing = 2,
+            };
+            panel.Children.Add(new TextBlock
+            {
+                Text = "任务栏浓度",
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            });
+            panel.Children.Add(_taskbarTintValueText);
+            panel.Children.Add(_taskbarTintSlider);
+            panel.Children.Add(_taskbarTintHintText);
+
+            _taskbarTintFlyout = new Flyout { Content = panel };
+            _taskbarTintFlyout.Closed += (_, _) => SaveTaskbarTint();
+        }
+
+        private void TaskbarTintSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+        {
+            if (_taskbarTintValueText != null)
+            {
+                _taskbarTintValueText.Text = $"浓度：{(int)Math.Round(e.NewValue)}%";
+            }
+
+            if (_taskbarTintSyncing)
+            {
+                return;
+            }
+
+            var service = (Application.Current as App)?.TaskbarAppearance;
+            service?.SetTintAlpha((int)Math.Round(e.NewValue * 255.0 / 100.0));
+        }
+
+        private void SaveTaskbarTint()
+        {
+            var service = (Application.Current as App)?.TaskbarAppearance;
+            if (service == null)
+            {
+                return;
+            }
+
+            _appSettings.TaskbarClearAlpha = service.ClearAlpha;
+            _appSettings.TaskbarAcrylicAlpha = service.AcrylicAlpha;
+            SettingsManager.SaveSettings(_appSettings);
         }
 
         /// <summary>

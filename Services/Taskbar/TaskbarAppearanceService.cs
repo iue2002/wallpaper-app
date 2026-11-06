@@ -41,13 +41,21 @@ namespace App1.Services.Taskbar
         /// </summary>
         private const int MaxConsecutiveFailures = 3;
 
-        /// <summary>透明：完全透明（alpha=0）。</summary>
-        private const int ClearColor = 0x00000000;
-
-        /// <summary>亚克力：25% 黑，TintOpacity 由 alpha 换算。</summary>
-        private const int AcrylicColor = 0x40000000;
-
         private readonly object _gate = new();
+
+        /// <summary>透明模式的着色不透明度（0-255，0 = 完全透明）。</summary>
+        public int ClearAlpha { get; private set; }
+
+        /// <summary>亚克力模式的着色浓度（0-255，0 = 纯磨砂不着色）。</summary>
+        public int AcrylicAlpha { get; private set; } = 0x40;
+
+        /// <summary>当前档位对应的浓度，菜单里的滑块显示用。</summary>
+        public int CurrentTintAlpha => Current switch
+        {
+            TaskbarEffect.Clear => ClearAlpha,
+            TaskbarEffect.Acrylic => AcrylicAlpha,
+            _ => 0,
+        };
 
         private MemoryMappedFile? _mapping;
         private MemoryMappedViewAccessor? _view;
@@ -152,6 +160,54 @@ namespace App1.Services.Taskbar
             }
         }
 
+        /// <summary>启动时把设置里的浓度灌进来，必须在第一次 Apply 之前调。</summary>
+        public void InitializeTint(int clearAlpha, int acrylicAlpha)
+        {
+            ClearAlpha = Math.Clamp(clearAlpha, 0, 255);
+            AcrylicAlpha = Math.Clamp(acrylicAlpha, 0, 255);
+        }
+
+        /// <summary>
+        /// 拖滑块时实时改浓度：只重写共享内存再敲一下事件，不重新注入、不碰 explorer，
+        /// 所以可以边拖边看。档位是「关闭」时没有可调的对象，直接忽略。
+        /// </summary>
+        public void SetTintAlpha(int alpha)
+        {
+            alpha = Math.Clamp(alpha, 0, 255);
+
+            lock (_gate)
+            {
+                switch (Current)
+                {
+                    case TaskbarEffect.Clear:
+                        if (ClearAlpha == alpha)
+                        {
+                            return;
+                        }
+
+                        ClearAlpha = alpha;
+                        break;
+
+                    case TaskbarEffect.Acrylic:
+                        if (AcrylicAlpha == alpha)
+                        {
+                            return;
+                        }
+
+                        AcrylicAlpha = alpha;
+                        break;
+
+                    default:
+                        return;
+                }
+
+                if (_view != null)
+                {
+                    PublishMode(Current);
+                }
+            }
+        }
+
         private void PublishMode(TaskbarEffect effect)
         {
             var state = Read();
@@ -163,12 +219,12 @@ namespace App1.Services.Taskbar
             {
                 case TaskbarEffect.Clear:
                     state.Mode = TapIpc.ModeClear;
-                    state.Color = ClearColor;
+                    state.Color = (ClearAlpha & 0xFF) << 24;
                     break;
 
                 case TaskbarEffect.Acrylic:
                     state.Mode = TapIpc.ModeAcrylic;
-                    state.Color = AcrylicColor;
+                    state.Color = (AcrylicAlpha & 0xFF) << 24;
                     break;
 
                 default:
