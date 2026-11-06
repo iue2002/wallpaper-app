@@ -353,23 +353,19 @@ namespace App1.Services.Taskbar
                 string dir;
                 if (StartupRegistrar.IsPackaged)
                 {
-                    // MSIX 会把写往 %LOCALAPPDATA% 的文件重定向到
-                    // %LOCALAPPDATA%\Packages\<包名>\LocalCache\Local\ —— 那是打包进程
-                    // 自己的虚拟视图，explorer（非打包进程）在真实路径上根本看不到文件。
-                    // ApplicationData.Current.TemporaryFolder 指向 …\TempState\，
-                    // 是真实文件系统路径且纯 ASCII，TranslucentTB 也把 ExplorerTAP.dll 放这里。
-                    try
-                    {
-                        dir = Path.Combine(
-                            Windows.Storage.ApplicationData.Current.TemporaryFolder.Path,
-                            "XiaoKWallpaper",
-                            "TAP");
-                    }
-                    catch (Exception ex)
-                    {
-                        LastError = "打包版取 TempState 失败: " + ex.Message;
-                        return null;
-                    }
+                    // 绝对不能放进包的数据目录（LocalState / TempState）：
+                    // XAML 诊断会把这个 DLL 永久钉在 explorer 里，而 Windows 安装/更新
+                    // 包时要删除旧的应用数据目录 —— 文件被占用删不掉，部署直接报
+                    // 0x80073D05「删除包以前的应用数据时出错」。
+                    // TranslucentTB 也放 TempState，但它卸载包时会主动杀掉 explorer；
+                    // 我们不这么做（会闪任务栏），所以改用包生命周期之外的位置。
+                    //
+                    // ProgramData 不在 MSIX 的 AppData 写重定向范围内，是真实路径、
+                    // 纯 ASCII、所有用户可读，卸载或更新包都不会来清它。
+                    dir = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                        "XiaoKWallpaper",
+                        "TAP");
                 }
                 else
                 {
