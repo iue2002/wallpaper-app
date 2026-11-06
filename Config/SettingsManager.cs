@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using App1.Services.Diagnostics;
 
 namespace App1.Config
@@ -76,10 +77,9 @@ namespace App1.Config
         {
             try
             {
-                var json = JsonSerializer.Serialize(settings, new JsonSerializerOptions
-                {
-                    WriteIndented = true
-                });
+                // 用编译期生成的 JsonTypeInfo，不走反射重载：
+                // 裁剪/AOT 下也不会踩 IL2026，更不会因为运行时开关变化而失效。
+                var json = JsonSerializer.Serialize(settings, AppSettingsJsonContext.Default.AppSettings);
 
                 File.WriteAllText(SettingsFilePath, json);
 
@@ -102,7 +102,7 @@ namespace App1.Config
                 if (File.Exists(SettingsFilePath))
                 {
                     var json = File.ReadAllText(SettingsFilePath);
-                    var settings = JsonSerializer.Deserialize<AppSettings>(json);
+                    var settings = JsonSerializer.Deserialize(json, AppSettingsJsonContext.Default.AppSettings);
 
                     if (settings != null)
                     {
@@ -157,5 +157,15 @@ namespace App1.Config
         // 透明默认 0（完全透明），亚克力默认 64（25% 黑），偏了随时用菜单里的滑块调。
         public int TaskbarClearAlpha { get; set; } = 0;
         public int TaskbarAcrylicAlpha { get; set; } = 64;
+    }
+
+    /// <summary>
+    /// 设置的 JSON 源生成上下文：编译期生成类型元数据，不依赖运行时反射。
+    /// 这是设置这条关键路径的保险 —— 就算以后再动裁剪/AOT 配置，
+    /// 也不会出现「读不了也存不下、每次重启回默认值」。
+    /// </summary>
+    [JsonSerializable(typeof(AppSettings))]
+    internal partial class AppSettingsJsonContext : JsonSerializerContext
+    {
     }
 }

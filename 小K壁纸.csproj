@@ -125,5 +125,11 @@
     <PublishReadyToRun Condition="'$(Configuration)' != 'Debug'">True</PublishReadyToRun>
     <PublishTrimmed Condition="'$(Configuration)' == 'Debug'">False</PublishTrimmed>
     <PublishTrimmed Condition="'$(Configuration)' != 'Debug'">True</PublishTrimmed>
+    <!-- .NET 8 在 PublishTrimmed=true 时会把 System.Text.Json 的反射序列化整个关掉。
+         Release / 商店版里 JsonSerializer.Serialize/Deserialize 会抛
+         「Reflection-based serialization has been disabled」——设置读不了、也存不下，
+         表现就是「每次重启都回到默认关闭」。构建日志里那串 IL2026 警告就是在说这件事。
+         显式打开，保留裁剪的同时让所有现存的反射式调用恢复工作。 -->
+    <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
   </PropertyGroup>
 </Project>
