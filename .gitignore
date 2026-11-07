@@ -70,3 +70,17 @@ artifacts/
 native/dist/*.exp
 native/dist/*.lib
 native/dist/*.pdb
+
+# 安装包 / 发布产物 —— 一律不入库
+# （历史里曾被塞进约 550MB 的 msi、exe 和整套 publish 目录，2026-11-07 已从历史中剔除）
+*.msi
+*.msix
+*.msixupload
+*.appx
+*.appxbundle
+*.appxupload
+*.msixbundle
+win-x64-Release*/
+publish/
+# 编译出来的可执行文件一律不入库（源码里的 .exe 为零）
+*.exe
