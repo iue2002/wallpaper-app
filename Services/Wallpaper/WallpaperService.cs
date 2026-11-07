@@ -1,10 +1,13 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using App1.Services.Diagnostics;
 
 namespace App1.Services.WallpaperSetter
 {
@@ -108,28 +111,69 @@ namespace App1.Services.WallpaperSetter
 
         public WallpaperService()
         {
-            // 配置 HttpClientHandler 禁用代理
-            var handler = new HttpClientHandler
+            // SocketsHttpHandler 而不是 HttpClientHandler：需要 KeepAlivePing 来识别
+            // “连接还在、但对端已经不吐数据”的半死 TCP。普通超时管不到这种状态。
+            var handler = new SocketsHttpHandler
             {
                 UseProxy = false,
-                Proxy = null
+                Proxy = null,
+                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+
+                // 请求活跃但 20 秒没有任何数据往返，就发一次 ping；15 秒还没回应，
+                // 判定连接已死、直接丢掉。没有这个，半死连接会一直挂到进程退出。
+                KeepAlivePingDelay = TimeSpan.FromSeconds(20),
+                KeepAlivePingTimeout = TimeSpan.FromSeconds(15),
+                KeepAlivePingPolicy = HttpKeepAlivePingPolicy.WithActiveRequests
             };
-            
+
             _httpClient = new HttpClient(handler)
             {
-                Timeout = TimeSpan.FromSeconds(60)  // 增加超时时间到60秒
+                // 这个超时只管到「拿到响应头」。响应体是流，要另设总超时，
+                // 见 DownloadImageAsync 里的 downloadCts。
+                Timeout = TimeSpan.FromSeconds(60)
             };
-            
+
             // 创建壁纸缓存文件夹 - 使用Pictures文件夹，Windows壁纸API可以访问
             var picturesFolder = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
             _wallpaperFolder = Path.Combine(picturesFolder, "小K壁纸");
-            
+
             if (!Directory.Exists(_wallpaperFolder))
             {
                 Directory.CreateDirectory(_wallpaperFolder);
             }
-            
-            System.Diagnostics.Debug.WriteLine($"[壁纸设置] 壁纸文件夹: {_wallpaperFolder}");
+
+            CleanupStalePartFiles();
+
+            AppLog.Write($"[壁纸设置] 壁纸文件夹: {_wallpaperFolder}");
+        }
+
+        /// <summary>
+        /// 清掉上次没下完的半截文件。
+        ///
+        /// 正常失败路径会在 finally 里删掉 .part，但进程被强杀、或者 await 永久挂住时
+        /// 走不到 finally —— 11-07 那次就在缓存目录里留了一个 1.7MB 的 .part 躺了两小时。
+        /// 这些东西没有任何价值（下载完整了才会改名），启动时一律清掉。
+        /// </summary>
+        private void CleanupStalePartFiles()
+        {
+            try
+            {
+                var parts = Directory.GetFiles(_wallpaperFolder, "*.part");
+                foreach (var part in parts)
+                {
+                    try { File.Delete(part); } catch { }
+                }
+
+                if (parts.Length > 0)
+                {
+                    AppLog.Write($"[壁纸设置] 已清理 {parts.Length} 个未完成的 .part 文件");
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write($"[壁纸设置] 清理 .part 失败: {ex.Message}");
+            }
         }
 
         /// <summary>
@@ -368,16 +412,26 @@ namespace App1.Services.WallpaperSetter
                 // 改成 64KB 缓冲边下边写，托管堆峰值基本只剩这点缓冲。
                 tempPath = localPath + ".part";
 
-                using (var response = await _httpClient.GetAsync(imageUrl, HttpCompletionOption.ResponseHeadersRead))
+                // 整条下载链的总超时，必须自己管。
+                //
+                // HttpClient.Timeout 在 ResponseHeadersRead 模式下只覆盖到「拿到响应头」，
+                // 之后读响应体是一段裸流，读多久它完全不管。11-07 那次就是 Pexels 的 CDN
+                // 发了 1.7MB 之后停住不吐数据、连接又没断，CopyToAsync 永远等下去，
+                // 上层 SemaphoreSlim 的 finally 永远执行不到，自动换壁纸停了两个多小时。
+                // 这里给 90 秒：4K 图在慢速网络下也够，超时就当这张失败。
+                using var downloadCts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+
+                using (var response = await _httpClient.GetAsync(
+                           imageUrl, HttpCompletionOption.ResponseHeadersRead, downloadCts.Token))
                 {
                     response.EnsureSuccessStatusCode();
 
-                    using var source = await response.Content.ReadAsStreamAsync();
+                    using var source = await response.Content.ReadAsStreamAsync(downloadCts.Token);
                     using var target = new FileStream(
                         tempPath, FileMode.Create, FileAccess.Write, FileShare.None,
                         bufferSize: 64 * 1024, useAsync: true);
 
-                    await source.CopyToAsync(target, 64 * 1024);
+                    await source.CopyToAsync(target, 64 * 1024, downloadCts.Token);
                 }
 
                 // 下载完整了才改名，避免半截文件被当成缓存命中
@@ -389,14 +443,23 @@ namespace App1.Services.WallpaperSetter
 
                 return localPath;
             }
+            catch (OperationCanceledException)
+            {
+                // 总超时（或 HttpClient.Timeout）触发。必须写 AppLog：
+                // 后台模式没有调试器，Debug.WriteLine 不会进文件，出问题时等于什么都看不到。
+                AppLog.Write($"[壁纸设置] 下载超时，放弃这张: {imageUrl}");
+                return string.Empty;
+            }
             catch (Exception ex)
             {
+                AppLog.Write($"[壁纸设置] 下载失败: {ex.Message} | {imageUrl}");
                 System.Diagnostics.Debug.WriteLine($"[壁纸设置] 下载图片失败: {ex.Message}");
                 System.Diagnostics.Debug.WriteLine($"[壁纸设置] 异常堆栈: {ex.StackTrace}");
                 return string.Empty;
             }
             finally
             {
+                // 半截文件一定删掉。正常完成时 tempPath 已经清空（改名成正式文件了）。
                 if (!string.IsNullOrEmpty(tempPath))
                 {
                     try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
@@ -524,57 +587,63 @@ namespace App1.Services.WallpaperSetter
         /// </summary>
         public async Task<bool> SetLockScreenAsync(string imageUrl, string title = "LockScreen")
         {
+            // 下载本身有 90 秒总超时；这里再给整条锁屏链一个上限。
+            // 防的是 WinRT 的 GetFileFromPathAsync / SetImageFileAsync 在后台无窗口
+            // 进程里挂住 —— 这两个 API 没有任何超时参数，挂起来就是永远。
             try
             {
-                System.Diagnostics.Debug.WriteLine($"[锁屏设置] 开始设置锁屏界面...");
-                
-                // 1. 下载图片到本地
-                var localPath = await DownloadImageAsync(imageUrl, title);
-                if (string.IsNullOrEmpty(localPath))
-                {
-                    System.Diagnostics.Debug.WriteLine("[锁屏设置] 图片下载失败");
-                    return false;
-                }
-                
-                // 2. 验证文件存在
-                if (!File.Exists(localPath))
-                {
-                    System.Diagnostics.Debug.WriteLine($"[锁屏设置] 图片文件不存在: {localPath}");
-                    return false;
-                }
-                
-                // 3. 确保使用绝对路径
-                var absolutePath = Path.GetFullPath(localPath);
-                System.Diagnostics.Debug.WriteLine($"[锁屏设置] 图片绝对路径: {absolutePath}");
-                
-                // 4. 尝试设置锁屏界面（兼容Windows 11 26200+版本）
-                try
-                {
-                    var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(absolutePath);
-                    await Windows.System.UserProfile.LockScreen.SetImageFileAsync(file);
-                    
-                    System.Diagnostics.Debug.WriteLine($"[锁屏设置] ✅ 锁屏界面设置成功");
-                    return true;
-                }
-                catch (System.Runtime.InteropServices.COMException ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[锁屏设置] ❌ COM异常: {ex.Message}");
-                    System.Diagnostics.Debug.WriteLine($"[锁屏设置] 错误代码: 0x{ex.HResult:X8}");
-                    
-                    // 尝试备用方法：使用注册表设置
-                    return SetLockScreenUsingRegistry(absolutePath);
-                }
+                return await SetLockScreenCoreAsync(imageUrl, title)
+                    .WaitAsync(TimeSpan.FromSeconds(120));
             }
-            catch (UnauthorizedAccessException ex)
+            catch (TimeoutException)
             {
-                System.Diagnostics.Debug.WriteLine($"[锁屏设置] ❌ 权限不足: {ex.Message}");
+                AppLog.Write("[锁屏设置] 超过 120 秒未返回，放弃本次（闸门照常释放）");
                 return false;
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[锁屏设置] ❌ 设置失败: {ex.Message}");
-                System.Diagnostics.Debug.WriteLine($"[锁屏设置] 异常类型: {ex.GetType().Name}");
+                AppLog.Write($"[锁屏设置] 失败: {ex.Message}");
                 return false;
+            }
+        }
+
+        private async Task<bool> SetLockScreenCoreAsync(string imageUrl, string title)
+        {
+            System.Diagnostics.Debug.WriteLine($"[锁屏设置] 开始设置锁屏界面...");
+
+            // 1. 下载图片到本地
+            var localPath = await DownloadImageAsync(imageUrl, title);
+            if (string.IsNullOrEmpty(localPath))
+            {
+                AppLog.Write("[锁屏设置] 图片下载失败，放弃本次");
+                return false;
+            }
+
+            // 2. 验证文件存在
+            if (!File.Exists(localPath))
+            {
+                AppLog.Write($"[锁屏设置] 图片文件不存在: {localPath}");
+                return false;
+            }
+
+            // 3. 确保使用绝对路径
+            var absolutePath = Path.GetFullPath(localPath);
+
+            // 4. 尝试设置锁屏界面（兼容 Windows 11 26200+）
+            try
+            {
+                var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(absolutePath);
+                await Windows.System.UserProfile.LockScreen.SetImageFileAsync(file);
+
+                System.Diagnostics.Debug.WriteLine("[锁屏设置] ✅ 锁屏界面设置成功");
+                return true;
+            }
+            catch (System.Runtime.InteropServices.COMException ex)
+            {
+                AppLog.Write($"[锁屏设置] COM 异常 0x{ex.HResult:X8}: {ex.Message}，退回注册表方式");
+
+                // 尝试备用方法：使用注册表设置
+                return SetLockScreenUsingRegistry(absolutePath);
             }
         }
         
@@ -617,8 +686,22 @@ namespace App1.Services.WallpaperSetter
         /// 系统调用有可能永远不返回（explorer 卡住、显示驱动挂起），
         /// 没有上限的话 await 会一直悬着，"正在设置壁纸"的提示也就永远收不掉。
         /// </summary>
-        private static async Task<T?> RunOnStaThreadAsync<T>(Func<T> func, TimeSpan timeout)
+        /// <summary>
+        /// 系统调用是否还有一次在飞。0=空闲 1=有线程正在执行。
+        /// 超时返回时**不**复位 —— 只有线程真正结束才复位。
+        /// 这样系统调用一旦卡死，后续换壁纸会立刻跳过，而不是每分钟再堆一个线程上去；
+        /// 等那个线程恢复并退出，功能自动恢复。
+        /// </summary>
+        private int _applyThreadInFlight;
+
+        private async Task<T?> RunOnStaThreadAsync<T>(Func<T> func, TimeSpan timeout)
         {
+            if (Interlocked.CompareExchange(ref _applyThreadInFlight, 1, 0) != 0)
+            {
+                AppLog.Write("[壁纸设置] 上一次系统调用仍未返回，本次跳过（不再叠加新线程）");
+                return default;
+            }
+
             var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             var thread = new Thread(() =>
@@ -630,6 +713,11 @@ namespace App1.Services.WallpaperSetter
                 catch (Exception ex)
                 {
                     tcs.TrySetException(ex);
+                }
+                finally
+                {
+                    // 线程真正结束才允许下一次调用
+                    Volatile.Write(ref _applyThreadInFlight, 0);
                 }
             })
             {
@@ -643,8 +731,8 @@ namespace App1.Services.WallpaperSetter
             var finished = await Task.WhenAny(tcs.Task, Task.Delay(timeout)).ConfigureAwait(false);
             if (finished != tcs.Task)
             {
-                System.Diagnostics.Debug.WriteLine(
-                    $"[壁纸设置] ⚠️ 系统调用超过 {timeout.TotalSeconds:0} 秒未返回，先放弃等待（线程继续在后台跑）");
+                AppLog.Write(
+                    $"[壁纸设置] ⚠️ 系统调用超过 {timeout.TotalSeconds:0} 秒未返回，放弃等待（线程仍在后台跑，后续换壁纸会跳过直到它退出）");
                 return default;
             }
 

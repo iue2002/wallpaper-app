@@ -9,7 +9,7 @@ namespace App1.Services.Diagnostics
     /// 只能靠这个文件复盘。
     ///
     /// 位置：%LOCALAPPDATA%\小K壁纸\app.log
-    /// 超过 1MB 自动清空，写入失败一律吞掉，绝不影响功能。
+    /// 超过 1MB 滚动成 app.log.1（保留上一份，不直接清空），写入失败一律吞掉，绝不影响功能。
     /// </summary>
     public static class AppLog
     {
@@ -47,7 +47,23 @@ namespace App1.Services.Diagnostics
                     var info = new FileInfo(LogPath);
                     if (info.Exists && info.Length > MaxBytes)
                     {
-                        File.WriteAllText(LogPath, string.Empty);
+                        // 滚动保留上一份，而不是直接清空。
+                        // 长时间运行出问题时，被清掉的往往正好是案发前那段日志。
+                        var backup = LogPath + ".1";
+                        try
+                        {
+                            if (File.Exists(backup))
+                            {
+                                File.Delete(backup);
+                            }
+
+                            File.Move(LogPath, backup);
+                        }
+                        catch
+                        {
+                            // 改名失败（被占用）才退回清空
+                            try { File.WriteAllText(LogPath, string.Empty); } catch { }
+                        }
                     }
 
                     File.AppendAllText(

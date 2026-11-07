@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -104,6 +105,15 @@ namespace App1.Services.Background
         /// <summary>
         /// 立即换一张。托盘菜单"立即换一张"和主窗口里的按钮都走这里。
         /// </summary>
+        /// <summary>
+        /// 单次换壁纸的硬上限。正常一次 2~20 秒，3 分钟已经非常宽松；
+        /// 真挂到 3 分钟就说明对端不吐数据了，不能再等。
+        /// </summary>
+        private static readonly TimeSpan ChangeTimeout = TimeSpan.FromMinutes(3);
+
+        /// <summary>等闸门的时长。定时器每分钟来一次，没必要等太久。</summary>
+        private static readonly TimeSpan GateWait = TimeSpan.FromSeconds(3);
+
         public async Task<bool> ChangeAsync(bool desktop, string reason)
         {
             if (_disposed)
@@ -111,13 +121,56 @@ namespace App1.Services.Background
                 return false;
             }
 
-            // 上一次还在下载就跳过这次，硬等只会把线程堆起来
-            if (!await _changeGate.WaitAsync(TimeSpan.FromSeconds(10)))
+            // 上一次还在跑就跳过这次，硬等只会把线程池堆起来。
+            if (!await _changeGate.WaitAsync(GateWait))
             {
                 AppLog.Write($"[自动换壁纸] 上一次还没结束，跳过本次（{reason}）");
                 return false;
             }
 
+            var started = Stopwatch.StartNew();
+            AppLog.Write($"[自动换壁纸] 开始（{reason}）目标={(desktop ? "桌面" : "锁屏")}");
+
+            // 关键：把实际流程包一层「等 + 超时放弃」。
+            //
+            // 任何单点 await 挂住（半死 TCP 连接、系统 API 无响应、WinRT 不回调）
+            // 都不能把闸门永久占死。11-07 那次就是 DownloadImageAsync 的
+            // CopyToAsync 永久等待，导致 finally 永远执行不到，
+            // 自动换壁纸整整停了 2 小时 45 分钟，日志里只有每分钟一条「跳过本次」。
+            var work = ChangeCoreAsync(desktop, reason);
+
+            try
+            {
+                if (await Task.WhenAny(work, Task.Delay(ChangeTimeout)) != work)
+                {
+                    AppLog.Write(
+                        $"[自动换壁纸] ⚠️ 本次超过 {ChangeTimeout.TotalMinutes:0} 分钟未完成，放弃并复位闸门（{reason}）");
+
+                    // 挂起的任务以后可能才抛异常，挂个观察者避免未观察异常，也留下线索。
+                    _ = work.ContinueWith(t =>
+                    {
+                        if (t.IsFaulted)
+                        {
+                            AppLog.Write($"[自动换壁纸] 超时任务最终异常: {t.Exception?.GetBaseException().Message}");
+                        }
+                    }, TaskScheduler.Default);
+
+                    return false;
+                }
+
+                return await work;
+            }
+            finally
+            {
+                // 只有拿到信号量的分支才走到这里，Release 跟 WaitAsync 严格配对。
+                // 就算上面是超时返回，这一行也会把闸门还回去，后续定时立刻恢复。
+                _changeGate.Release();
+                AppLog.Write($"[自动换壁纸] 本次结束，耗时 {started.Elapsed.TotalSeconds:0.0}s（{reason}）");
+            }
+        }
+
+        private async Task<bool> ChangeCoreAsync(bool desktop, string reason)
+        {
             try
             {
                 var wallpaper = await PickWallpaperAsync();
@@ -152,10 +205,6 @@ namespace App1.Services.Background
                 AppLog.Write($"[自动换壁纸] 失败: {ex.Message}");
                 return false;
             }
-            finally
-            {
-                _changeGate.Release();
-            }
         }
 
         /// <summary>
@@ -179,7 +228,9 @@ namespace App1.Services.Background
 
                 try
                 {
-                    var list = await source.Fetch();
+                    // 每个源最多等 60 秒。单靠各服务内部的 HttpClient 30 秒超时
+                    // 兜不住整条链（Pexels 内部可能连发好几个请求，最后一个卡住照样没完）。
+                    var list = await source.Fetch().WaitAsync(TimeSpan.FromSeconds(60));
 
                     // 拿到列表还不够，必须有一张能真正设成壁纸的地址
                     var usable = list
